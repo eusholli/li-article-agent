@@ -1,0 +1,6 @@
+pydantic
+python-dotenv
+dspy
+attachments
+ddgs
+tavily-python

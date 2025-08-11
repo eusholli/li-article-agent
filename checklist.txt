@@ -1,0 +1,107 @@
+LinkedIn Article Quality Scoring Checklist
+(Rate each from 1–5: 1 = Poor/Not Present, 5 = Excellent/Strongly Present)
+
+1. Hook & Engagement
+Q1: Does the opening immediately grab attention with curiosity, emotion, or urgency?
+1 – Bland opening; no reason to keep reading
+3 – Somewhat interesting but predictable
+5 – Strong hook that makes reading irresistible
+
+Q2: Does the intro clearly state why this matters to the reader in the first 3 sentences?
+1 – Relevance is unclear
+3 – Relevance implied but not explicit
+5 – Clear, personal relevance to target audience immediately
+
+2. Storytelling & Structure
+Q3: Is the article structured like a narrative (problem → tension → resolution → takeaway)?
+1 – Disjointed list of points
+3 – Some flow, but transitions are weak
+5 – Smooth arc with a natural flow that keeps readers moving
+
+Q4: Are there specific, relatable examples or anecdotes?
+1 – Generic statements with no real-life grounding
+3 – Some examples, but not vivid
+5 – Memorable examples that make points stick
+
+3. Authority & Credibility
+Q5: Are claims backed by data, research, or credible sources?
+1 – No evidence given
+3 – Some supporting info, but patchy
+5 – Strong, credible evidence throughout
+
+Q6: Does the article demonstrate unique experience or perspective?
+1 – Generic, could be written by anyone
+3 – Some personal insight but not distinct
+5 – Clear, lived authority shines through
+
+4. Idea Density & Clarity
+Q7: Is there one clear, central idea driving the piece?
+1 – Multiple competing ideas; scattered focus
+3 – Mostly one theme but diluted by tangents
+5 – Laser-focused on one strong idea
+
+Q8: Is every sentence valuable (no filler or fluff)?
+1 – Lots of repetition or empty words
+3 – Mostly relevant with occasional filler
+5 – Concise, high-value throughout
+
+5. Original Thinking
+Q9: Does the article reframe common wisdom or challenge assumptions?
+1 – Conventional and predictable
+3 – Somewhat fresh take
+5 – Bold, memorable reframing
+
+Q10: Does it introduce new mental models or conceptual tools?
+1 – No new mental models introduced
+3 – A mental model mentioned but not deeply explained
+5 – Clear, useful model readers can apply
+
+6. Reader Value & Actionability
+Q11: Does the reader walk away with practical, actionable insights?
+1 – Vague advice, nothing to act on
+3 – Some useful tips but not clearly actionable
+5 – Concrete steps or takeaways that can be applied immediately
+
+Q12: Are lessons transferable beyond the example given?
+1 – Only relevant in a narrow context
+3 – Partially transferable
+5 – Clearly relevant across multiple scenarios
+
+7. Rhythm & Readability
+Q13: Is the pacing varied and easy to read (short + long sentences, subheaders, bullets)?
+1 – Dense and tiring to read
+3 – Some formatting but inconsistent
+5 – Effortless flow and scannability
+
+Q14: Is the reading level appropriate for Grade 10–12 (college-ready but not jargon-heavy)?
+1 – Overly complex or too simplistic
+3 – Mostly on target with some complexity issues
+5 – Perfect balance of sophistication and clarity
+
+8. Call to Connection
+Q15: Does it end with a thought-provoking question or reflection prompt?
+1 – No CTA or a generic “What do you think?”
+3 – Somewhat engaging but generic
+5 – Strong, specific prompt that sparks dialogue
+
+Q16: Does it use inclusive, community-building language (“we,” “us,” shared goals)?
+1 – Detached, academic tone
+3 – Some warmth but not consistent
+5 – Warm, inclusive tone throughout
+
+9. Performance Optimization (Post-Publication)
+Q17: Are engagement metrics strong (reactions/comments per views)?
+1 – Very low engagement relative to views
+3 – Average engagement
+5 – Above-benchmark engagement
+
+Q18: Do readers restate your ideas in their comments (proof of mental model adoption)?
+1 – Comments are surface-level (“great post”)
+3 – Some deeper engagement
+5 – Multiple comments show genuine idea adoption
+
+Scoring:
+80–90: World-class — publish as is.
+65–79: Strong, but tighten weak areas.
+50–64: Needs restructuring and sharper insights.
+Below 50: Rework before publishing.

@@ -41,6 +41,13 @@
 - **CLI Interface:** Full command-line tool with comprehensive options
 - **Error Handling:** Robust error recovery and user feedback
 
+#### HTML Text Cleaning Enhancement ✅ NEW FEATURE
+- **HTMLTextCleaner Class:** Comprehensive HTML content processing for RAG system
+- **RAG Integration:** Seamlessly integrated into TavilyRetriever pipeline
+- **Size Management:** Enforces 100,000 character limit across all passages
+- **Quality Optimization:** Removes web scaffolding while preserving meaningful content
+- **Error Resilience:** Graceful handling of malformed HTML with multiple parser fallbacks
+
 ### 📋 Planned Implementation
 
 #### Phase 1: Core Components (Current Session)

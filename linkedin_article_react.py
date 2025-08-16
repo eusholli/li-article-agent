@@ -39,8 +39,8 @@ class TopicExtractionSignature(dspy.Signature):
     main_topic = dspy.OutputField(
         desc="Main topic/subject of the article for web search"
     )
-    search_query = dspy.OutputField(
-        desc="Optimized search query to find relevant context for the topic"
+    search_query: List[str] = dspy.OutputField(
+        desc="A list of at most 5 optimized search queries to find relevant context for the topic"
     )
     needs_research = dspy.OutputField(
         desc="Boolean: whether this topic would benefit from web research context"
@@ -126,7 +126,7 @@ class LinkedInArticleREACT(dspy.Module):
             "main_topic": topic_analysis.get("main_topic", ""),
             "search_query": topic_analysis.get("search_query", ""),
             "needs_research": topic_analysis.get("needs_research", False),
-            "research_performed": bool(context.strip()),
+            "research_performed": bool(context),
             "context_length": len(context),
             "rag_available": self.rag_available,
             "reasoning_steps": [
@@ -189,7 +189,9 @@ class LinkedInArticleREACT(dspy.Module):
                 "needs_research": False,
             }
 
-    def _act_search_context(self, topic_analysis: Dict[str, Any], verbose: bool) -> str:
+    def _act_search_context(
+        self, topic_analysis: Dict[str, Any], verbose: bool
+    ) -> Dict[str, str]:
         """
         ACT: Search for web context if research is needed and RAG is available.
 
@@ -204,54 +206,63 @@ class LinkedInArticleREACT(dspy.Module):
                 print(
                     "🧠 REACT DECISION: No research needed, proceeding without context"
                 )
-            return ""
+            return {}
 
         if not self.rag_available:
             if verbose:
                 print("⚠️ REACT DECISION: Research needed but RAG not available")
-            return ""
+            return {}
 
         # Perform web search
         if verbose:
             print("🌐 REACT ACTION: Searching for topic context...")
 
         try:
-            search_query = topic_analysis.get("search_query", "")
+            search_query = topic_analysis.get("search_query", [])
             if not search_query:
                 if verbose:
                     print("⚠️ No search query available, skipping search")
-                return ""
+                return {}
 
             # Use TavilyRAGModule to search and get structured markdown context
             rag_result = self.rag_module.forward(search_query)
 
-            # Extract the markdown answer from the RAG result
-            context = (
-                rag_result.markdown_answer
-                if hasattr(rag_result, "markdown_answer")
-                else ""
-            )
+            # Create URL-to-passage mapping from RAG result
+            if (
+                hasattr(rag_result, "passages")
+                and hasattr(rag_result, "urls")
+                and isinstance(rag_result.passages, list)
+                and isinstance(rag_result.urls, list)
+                and len(rag_result.passages) == len(rag_result.urls)
+            ):
+                context_dict = dict(zip(rag_result.urls, rag_result.passages))
+            else:
+                context_dict = {}
 
             if verbose:
-                context_length = len(context)
-                if context_length > 0:
-                    print(f"✅ Retrieved RAG context: {context_length} characters")
-                    # Show a preview of the context
-                    preview = context[:200] + "..." if len(context) > 200 else context
-                    print(f"📄 Context preview: {preview}")
+                context_count = len(context_dict)
+                if context_count > 0:
+                    print(
+                        f"✅ Retrieved RAG context: {context_count} URL-passage pairs"
+                    )
+                    # Show a preview of the URLs
+                    urls_preview = list(context_dict.keys())[:3]  # Show first 3 URLs
+                    print(f"📄 URLs retrieved: {urls_preview}")
+                    if len(context_dict) > 3:
+                        print(f"    ... and {len(context_dict) - 3} more")
                 else:
                     print("⚠️ No context retrieved from search")
 
-            return context
+            return context_dict
 
         except Exception as e:
             logger.error(f"Error in web search: {e}")
             if verbose:
                 print(f"⚠️ Web search failed: {e}")
-            return ""
+            return {}
 
     def _act_generate_article(
-        self, draft_or_outline: str, context: str, verbose: bool
+        self, draft_or_outline: str, context: Dict[str, str], verbose: bool
     ) -> Dict[str, Any]:
         """
         ACT: Generate article using enhanced LinkedInArticleGenerator with context.
@@ -260,6 +271,7 @@ class LinkedInArticleREACT(dspy.Module):
             print("📝 REACT ACTION: Generating article with enhanced context...")
 
         # Use the enhanced article generator with context
+        # Context is already in the correct Dict format
         result = self.article_generator.generate_article_with_context(
             draft_or_outline, context, verbose
         )

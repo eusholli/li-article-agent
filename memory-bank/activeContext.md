@@ -57,13 +57,41 @@
 3. **Product Context:** User experience and value proposition documented
 4. **System Patterns:** Architecture and design patterns established
 5. **Technical Context:** Technology stack and constraints documented
+6. **HTML Text Cleaning System:** ✅ NEW - Robust HTML content processing for RAG
+
+### Latest Enhancement: Refactored Citation-Worthy Content Filter Integration
+
+#### 1. Architectural Refactoring
+- **Moved Citation Classes:** CitationFilter and CitationWorthyFilter relocated from rag.py to html_text_cleaner.py
+- **Integrated Processing:** Citation filtering now happens within HTMLTextCleaner._apply_size_limiting()
+- **Single Responsibility:** HTML cleaning and citation filtering unified in one module
+- **Simplified RAG Pipeline:** TavilyRetriever now only calls clean_and_limit_passages() for complete processing
+
+#### 2. Enhanced Size Management
+- **Per-Passage Processing:** Citation filtering applied to each passage individually before size limiting
+- **Smart Fallback:** If citation filtering brings content under 100K limit, no further truncation needed
+- **Optimized Flow:** Citation filtering → Smart truncation (if still needed) → Final output
+- **Better Control:** Ensures each passage stays under context window size constraints
+
+#### 3. Technical Implementation
+- **Cleaner Architecture:** Removed duplicate citation filtering code from rag.py
+- **Unified Processing:** All content processing (HTML cleaning + citation filtering + size limiting) in one place
+- **Error Resilience:** Citation filtering failures gracefully fall back to original passages
+- **Comprehensive Logging:** Detailed progress tracking through each processing stage
+- **Type Safety:** Maintained List[str] typing throughout the pipeline
+
+#### Previous Enhancement: HTML Text Cleaning System
+- **HTMLTextCleaner Class:** Comprehensive HTML processing and size limiting
+- **Web Scaffolding Removal:** Removes navigation, ads, and non-content elements
+- **100K Character Limit:** Enforces context window size constraints
+- **Smart Truncation:** Preserves sentence boundaries when limiting content
+- **Multiple Parser Support:** Fallback parsers for robust HTML handling
 
 ### Next Implementation Steps
-1. **CriteriaExtractor Module:** Parse SCORING_CRITERIA dynamically
-2. **WordCountManager Class:** Handle length constraints and adjustments
-3. **DSPy Signatures:** Define article generation and improvement signatures
-4. **ArticleGenerator Module:** Core generation and improvement logic
-5. **Main Orchestrator:** Coordinate the complete generation process
+1. **Testing:** Validate HTML cleaning with real-world content
+2. **Performance Monitoring:** Track cleaning effectiveness and speed
+3. **Fine-tuning:** Adjust cleaning parameters based on content quality
+4. **Documentation:** Update user guides with new RAG capabilities
 
 ### Active Considerations
 

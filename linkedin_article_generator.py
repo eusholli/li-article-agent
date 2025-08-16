@@ -42,8 +42,8 @@ class ArticleGenerationSignature(dspy.Signature):
         desc="Original draft for reference to maintain key points"
     )
     context = dspy.InputField(
-        desc="RAG-generated markdown context with verified citations [text](url)",
-        default="",
+        desc="Dictionary mapping URLs to their text content for citation selection. Key: URL, Value: relevant text content",
+        default={},
     )
     scoring_criteria = dspy.InputField(desc="Complete scoring criteria for reference")
     word_count_guidance = dspy.InputField(desc="Word count optimization guidance")
@@ -81,8 +81,8 @@ class ArticleImprovementSignature(dspy.Signature):
         desc="Original draft for reference to maintain key points"
     )
     context = dspy.InputField(
-        desc="RAG-generated markdown context with verified citations [text](url)",
-        default="",
+        desc="Dictionary mapping URLs to their text content for citation selection. Key: URL, Value: relevant text content",
+        default={},
     )
     score_feedback = dspy.InputField(
         desc="Detailed scoring feedback and improvement suggestions"
@@ -158,7 +158,7 @@ class LinkedInArticleGenerator:
         self.versions: List[ArticleVersion] = []
         self.generation_log: List[str] = []
         self.original_draft: Optional[str] = None
-        self.search_context: str = ""
+        self.search_context: Dict[str, str] = {}
 
     def generate_article(
         self, draft_or_outline: str, verbose: bool = True
@@ -173,17 +173,17 @@ class LinkedInArticleGenerator:
         Returns:
             Dict containing final article, score, and generation metadata
         """
-        return self.generate_article_with_context(draft_or_outline, "", verbose)
+        return self.generate_article_with_context(draft_or_outline, {}, verbose)
 
     def generate_article_with_context(
-        self, draft_or_outline: str, context: str = "", verbose: bool = True
+        self, draft_or_outline: str, context: Dict[str, str] = {}, verbose: bool = True
     ) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline with web context.
 
         Args:
             draft_or_outline: Initial draft article or outline
-            context: Web search context about the main topic
+            context: Dictionary mapping URLs to their text content for citation selection
             verbose: Whether to print progress updates
 
         Returns:
@@ -197,10 +197,10 @@ class LinkedInArticleGenerator:
         self.versions.clear()
         self.generation_log.clear()
         self.original_draft = draft_or_outline
-        self.search_context = context
+        self.search_context = context or {}
 
         if context and verbose:
-            print(f"🌐 Using web context: {len(context)} characters")
+            print(f"🌐 Using web context: {len(context)} URLs")
 
         # Generate initial markdown article from draft/outline (Version 1)
         if verbose:
@@ -328,7 +328,7 @@ class LinkedInArticleGenerator:
         return final_result
 
     def _generate_initial_article(
-        self, draft_or_outline: str, context: str, verbose: bool
+        self, draft_or_outline: str, context: Dict[str, str], verbose: bool
     ) -> str:
         """Generate initial markdown article from draft/outline using ArticleGenerationSignature."""
 

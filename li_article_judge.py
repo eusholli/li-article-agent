@@ -444,6 +444,8 @@ class LinkedInArticleScorer(dspy.Module):
                             scale_description=scale_desc,
                         )
 
+                        # dspy.inspect_history(1)  # Inspect history for debugging
+
                         # Validate the result using our validation function
                         if validate_criterion_output(result):
                             break  # Success, exit retry loop
@@ -529,6 +531,8 @@ class LinkedInArticleScorer(dspy.Module):
             total_score=f"{total_score}/{max_score}",
             category_breakdown=category_breakdown,
         )
+
+        # dspy.inspect_history(1)  # Inspect history for debugging
 
         return ArticleScoreModel(
             total_score=total_score,

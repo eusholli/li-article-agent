@@ -4,3 +4,5 @@ dspy
 attachments
 ddgs
 tavily-python
+beautifulsoup4
+lxml

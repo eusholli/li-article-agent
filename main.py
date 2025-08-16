@@ -13,6 +13,7 @@ Usage:
     python main.py --target-score 85 --max-iterations 5
 """
 
+import dspy
 import argparse
 import sys
 from pathlib import Path
@@ -234,6 +235,7 @@ The future will likely be hybrid, combining the best of both worlds.
             import traceback
 
             traceback.print_exc()
+            # dspy.inspect_history(1)  # Inspect history for debugging
         sys.exit(1)
 
 

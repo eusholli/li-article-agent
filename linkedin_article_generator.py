@@ -126,10 +126,10 @@ class LinkedInArticleGenerator:
 
     def __init__(
         self,
-        target_score_percentage: float = 89.0,
-        max_iterations: int = 10,
-        word_count_min: int = 2000,
-        word_count_max: int = 2500,
+        target_score_percentage: float,
+        max_iterations: int,
+        word_count_min: int,
+        word_count_max: int,
     ):
         """
         Initialize the LinkedIn Article Generator.
@@ -366,7 +366,9 @@ class LinkedInArticleGenerator:
         )
 
         # Get gap analysis
-        gap_analysis = self.criteria_extractor.analyze_score_gaps(score_results)
+        gap_analysis = self.criteria_extractor.analyze_score_gaps(
+            score_results, self.target_score_percentage
+        )
 
         # Get word count analysis
         word_count = self.word_count_manager.count_words(current_article)
@@ -599,7 +601,12 @@ class LinkedInArticleGenerator:
 
 if __name__ == "__main__":
     # Example usage
-    generator = LinkedInArticleGenerator()
+    generator = LinkedInArticleGenerator(
+        target_score_percentage=89.0,
+        max_iterations=10,
+        word_count_min=2000,
+        word_count_max=2500,
+    )
 
     sample_draft = """
     # The Future of AI in Business

@@ -19,13 +19,13 @@ class WordCountManager:
     providing strategic guidance for expansion or condensation while maintaining quality.
     """
 
-    def __init__(self, target_min: int = 2000, target_max: int = 2500):
+    def __init__(self, target_min: int, target_max: int):
         """
         Initialize the word count manager with target range.
 
         Args:
-            target_min: Minimum target word count (default 2000)
-            target_max: Maximum target word count (default 2500)
+            target_min: Minimum target word count
+            target_max: Maximum target word count
         """
         self.target_min = target_min
         self.target_max = target_max
@@ -490,7 +490,7 @@ class WordCountManager:
 
 if __name__ == "__main__":
     # Test the word count manager
-    manager = WordCountManager()
+    manager = WordCountManager(target_min=2000, target_max=2500)
 
     print("=== WORD COUNT MANAGER TEST ===")
 

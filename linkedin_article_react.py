@@ -62,10 +62,10 @@ class LinkedInArticleREACT(dspy.Module):
 
     def __init__(
         self,
-        target_score_percentage: float = 89.0,
-        max_iterations: int = 10,
-        word_count_min: int = 2000,
-        word_count_max: int = 2500,
+        target_score_percentage: float,
+        max_iterations: int,
+        word_count_min: int,
+        word_count_max: int,
         rag_k: int = 5,
     ):
         """
@@ -358,7 +358,12 @@ class LinkedInArticleREACT(dspy.Module):
 
 if __name__ == "__main__":
     # Test the REACT module
-    react_generator = LinkedInArticleREACT()
+    react_generator = LinkedInArticleREACT(
+        target_score_percentage=89.0,
+        max_iterations=10,
+        word_count_min=2000,
+        word_count_max=2500,
+    )
 
     sample_draft = """
     # The Future of Remote Work in 2025

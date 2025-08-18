@@ -213,12 +213,12 @@ class CriteriaExtractor:
         """Get the total possible score across all criteria."""
         return sum(self.get_category_weights().values())
 
-    def get_target_score(self, target_percentage: float = 89.0) -> int:
+    def get_target_score(self, target_percentage: float) -> int:
         """
         Calculate target score based on percentage.
 
         Args:
-            target_percentage: Target percentage (default 89% for world-class)
+            target_percentage: Target percentage for world-class articles
 
         Returns:
             int: Target score in points
@@ -226,24 +226,27 @@ class CriteriaExtractor:
         total_possible = self.get_total_possible_score()
         return int(total_possible * (target_percentage / 100))
 
-    def analyze_score_gaps(self, score_results: ArticleScoreModel) -> Dict[str, Any]:
+    def analyze_score_gaps(
+        self, score_results: ArticleScoreModel, target_percentage: float = 89.0
+    ) -> Dict[str, Any]:
         """
         Analyze gaps between current and target scores.
 
         Args:
             score_results: Current scoring results
+            target_percentage: Target percentage for analysis
 
         Returns:
             Dict with gap analysis including priority areas for improvement
         """
         category_weights = self.get_category_weights()
-        target_total = self.get_target_score()
+        target_total = self.get_target_score(target_percentage)
         current_total = score_results.total_score
 
         gap_analysis = {
             "total_gap": target_total - current_total,
             "current_percentage": score_results.percentage,
-            "target_percentage": 89.0,
+            "target_percentage": target_percentage,
             "category_gaps": {},
             "priority_categories": [],
         }
@@ -252,7 +255,7 @@ class CriteriaExtractor:
         for category, results in score_results.category_scores.items():
             category_current = sum(r.score for r in results)
             category_max = category_weights.get(category, 0)
-            category_target = int(category_max * 0.89)  # 89% of category max
+            category_target = int(category_max * (target_percentage / 100))
             category_gap = category_target - category_current
 
             gap_analysis["category_gaps"][category] = {
@@ -302,7 +305,7 @@ if __name__ == "__main__":
         print(f"  {category}: {weight} points")
 
     print(f"\nTotal Possible Score: {extractor.get_total_possible_score()}")
-    print(f"Target Score (89%): {extractor.get_target_score()}")
+    print(f"Target Score (89%): {extractor.get_target_score(89.0)}")
 
     print("\nHigh Priority Criteria:")
     for category, question, points in extractor.get_high_priority_criteria():

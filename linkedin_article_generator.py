@@ -37,9 +37,8 @@ class ArticleVersion:
 class ArticleGenerationSignature(dspy.Signature):
     """Generate a complete LinkedIn article from draft/outline with RAG context and markdown formatting."""
 
-    draft_or_outline = dspy.InputField(desc="Original draft or outline to expand")
     original_draft = dspy.InputField(
-        desc="Original draft for reference to maintain key points"
+        desc="Original draft to expand on key points if necessary",
     )
     context = dspy.InputField(
         desc="Dictionary mapping URLs to their text content for citation selection. Key: URL, Value: relevant text content",
@@ -341,7 +340,6 @@ class LinkedInArticleGenerator:
         try:
             # Generate initial article with RAG context
             result = self.generator(
-                draft_or_outline=draft_or_outline,
                 original_draft=draft_or_outline,
                 context=context,
                 scoring_criteria=scoring_criteria,

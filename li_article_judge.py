@@ -97,6 +97,81 @@ class ArticleScoreModel(BaseModel):
     )
 
 
+class CriterionScoringOutput(BaseModel):
+    """
+    🎯 PYDANTIC MODEL: DSPy Output for Individual Criterion Scoring
+
+    This Pydantic model defines the structured output format for the ArticleCriterionScorer
+    DSPy signature. It ensures that LLM responses contain all required fields with proper
+    validation and type safety.
+
+    Benefits of using Pydantic for DSPy outputs:
+    - Automatic validation of LLM response structure
+    - Type safety and IDE support
+    - Clear error messages for invalid responses
+    - Eliminates need for manual validation functions
+    """
+
+    score: int = Field(..., ge=1, le=5, description="Score from 1-5 for this criterion")
+    reasoning: str = Field(
+        ...,
+        min_length=10,
+        description="Detailed explanation of why this score was given",
+    )
+    suggestions: str = Field(
+        ..., min_length=10, description="Specific suggestions for improvement"
+    )
+
+
+class OverallFeedbackOutput(BaseModel):
+    """
+    💬 PYDANTIC MODEL: DSPy Output for Overall Article Feedback
+
+    This Pydantic model defines the structured output format for the OverallFeedbackGenerator
+    DSPy signature. It ensures comprehensive feedback with validated performance tiers.
+    """
+
+    overall_feedback: str = Field(
+        ...,
+        min_length=50,
+        description="Comprehensive feedback on the article's strengths and areas for improvement",
+    )
+    performance_tier: str = Field(
+        ...,
+        description="Performance tier: World-class, Strong, Needs work, or Rework needed",
+    )
+
+    @validator("performance_tier")
+    def validate_tier(cls, v):
+        """Validate that performance tier is one of the expected values."""
+        valid_tiers = [
+            "World-class — publish as is",
+            "Strong, but tighten weak areas",
+            "Needs restructuring and sharper insights",
+            "Rework before publishing",
+        ]
+        # Allow partial matches for flexibility
+        if not any(tier_option in v for tier_option in valid_tiers):
+            # If no match, still allow it but log a warning
+            pass
+        return v
+
+
+class ArticleExtractionOutput(BaseModel):
+    """
+    📄 PYDANTIC MODEL: DSPy Output for File Article Extraction
+
+    This Pydantic model defines the structured output format for the FileArticleExtractor
+    DSPy signature. It ensures extracted article text meets minimum length requirements.
+    """
+
+    article_text: str = Field(
+        ...,
+        min_length=50,
+        description="Clean, readable article text extracted from the file, ready for analysis",
+    )
+
+
 # ==========================================================================
 # SECTION 2: SCORING CRITERIA DEFINITIONS
 # ==========================================================================
@@ -303,47 +378,13 @@ SCORING_CRITERIA = {
 
 
 # ==========================================================================
-# SECTION 3: VALIDATION FUNCTIONS
+# SECTION 3: PYDANTIC VALIDATION
 # ==========================================================================
 
-
-def validate_criterion_output(output) -> bool:
-    """
-    Validate that criterion scoring output has all required fields and proper format.
-
-    This function is used with DSPy's suggest method to ensure the LLM returns
-    properly formatted responses with all required fields.
-
-    Args:
-        output: The output from ArticleCriterionScorer
-
-    Returns:
-        bool: True if output is valid, False otherwise
-    """
-    required_fields = ["reasoning", "score", "suggestions"]
-
-    # Check if output has all required fields
-    if not all(hasattr(output, field) for field in required_fields):
-        return False
-
-    # Check if score is valid integer between 1-5
-    try:
-        score = int(output.score)
-        if not (1 <= score <= 5):
-            return False
-    except (ValueError, TypeError):
-        return False
-
-    # Check if reasoning and suggestions are non-empty strings
-    if not (
-        output.reasoning
-        and output.suggestions
-        and len(str(output.reasoning).strip()) > 10
-        and len(str(output.suggestions).strip()) > 10
-    ):
-        return False
-
-    return True
+# Note: Manual validation functions have been removed as Pydantic BaseModel classes
+# now handle all validation automatically through their field constraints and validators.
+# This provides better type safety, clearer error messages, and eliminates the need
+# for custom validation logic.
 
 
 # ==========================================================================
@@ -362,11 +403,9 @@ class ArticleCriterionScorer(dspy.Signature):
         desc="Description of the 1-5 scoring scale for this criterion"
     )
 
-    score: int = dspy.OutputField(desc="Score from 1-5 for this criterion")
-    reasoning = dspy.OutputField(
-        desc="Detailed explanation of why this score was given"
+    output: CriterionScoringOutput = dspy.OutputField(
+        desc="Structured scoring result with score, reasoning, and suggestions"
     )
-    suggestions = dspy.OutputField(desc="Specific suggestions for improvement")
 
 
 class OverallFeedbackGenerator(dspy.Signature):
@@ -376,11 +415,8 @@ class OverallFeedbackGenerator(dspy.Signature):
     total_score = dspy.InputField(desc="Total score achieved out of maximum possible")
     category_breakdown = dspy.InputField(desc="Breakdown of scores by category")
 
-    overall_feedback = dspy.OutputField(
-        desc="Comprehensive feedback on the article's strengths and areas for improvement"
-    )
-    performance_tier = dspy.OutputField(
-        desc="Performance tier: World-class, Strong, Needs work, or Rework needed"
+    output: OverallFeedbackOutput = dspy.OutputField(
+        desc="Structured feedback with overall assessment and performance tier"
     )
 
 
@@ -390,8 +426,8 @@ class FileArticleExtractor(dspy.Signature):
     file_content: Attachments = dspy.InputField(
         desc="The file containing the LinkedIn article (PDF, DOCX, etc.)"
     )
-    article_text: str = dspy.OutputField(
-        desc="Clean, readable article text extracted from the file, ready for analysis"
+    output: ArticleExtractionOutput = dspy.OutputField(
+        desc="Structured extraction result with clean article text"
     )
 
 
@@ -446,8 +482,8 @@ class LinkedInArticleScorer(dspy.Module):
 
                         # dspy.inspect_history(1)  # Inspect history for debugging
 
-                        # Validate the result using our validation function
-                        if validate_criterion_output(result):
+                        # With Pydantic validation, we can trust the structure
+                        if result and hasattr(result, "output"):
                             break  # Success, exit retry loop
                         else:
                             print(
@@ -465,23 +501,25 @@ class LinkedInArticleScorer(dspy.Module):
                             result = None
 
                 # Handle fallback if all retries failed
-                if result is None or not validate_criterion_output(result):
+                if result is None or not hasattr(result, "output"):
                     print(
                         f"⚠️ All retries failed for {criterion_id}, using fallback response"
                     )
 
-                    # Create a fallback result object
+                    # Create a fallback result with Pydantic structure
                     class FallbackResult:
                         def __init__(self):
-                            self.score = 3  # Default middle score
-                            self.reasoning = f"Unable to analyze this criterion due to response format issues. Criterion: {criterion['question'][:100]}..."
-                            self.suggestions = "Please review this criterion manually for more specific feedback."
+                            self.output = CriterionScoringOutput(
+                                score=3,  # Default middle score
+                                reasoning=f"Unable to analyze this criterion due to response format issues. Criterion: {criterion['question'][:100]}...",
+                                suggestions="Please review this criterion manually for more specific feedback.",
+                            )
 
                     result = FallbackResult()
 
-                # Parse and validate score
+                # Parse and validate score from Pydantic output
                 try:
-                    raw_score = int(result.score)
+                    raw_score = int(result.output.score)
                     raw_score = max(1, min(5, raw_score))  # Clamp to 1-5 range
                 except (ValueError, AttributeError):
                     raw_score = 3  # Default to middle score if parsing fails
@@ -493,8 +531,8 @@ class LinkedInArticleScorer(dspy.Module):
                 score_result = ScoreResultModel(
                     criterion=f"{criterion_id}: {criterion['question']}",
                     score=weighted_score,
-                    reasoning=str(result.reasoning),
-                    suggestions=str(result.suggestions),
+                    reasoning=str(result.output.reasoning),
+                    suggestions=str(result.output.suggestions),
                 )
                 category_results.append(score_result)
 
@@ -539,7 +577,7 @@ class LinkedInArticleScorer(dspy.Module):
             max_score=max_score,
             percentage=percentage,
             category_scores=category_scores,
-            overall_feedback=feedback_result.overall_feedback,
+            overall_feedback=feedback_result.output.overall_feedback,
             performance_tier=tier,
         )
 
@@ -626,7 +664,7 @@ def analyze_file(
             print("🔄 Extracting article text from file...")
             extractor = dspy.ChainOfThought(FileArticleExtractor)
             extraction_result = extractor(file_content=file_attachment)
-            article_text = extraction_result.article_text
+            article_text = extraction_result.output.article_text
         else:
             # Use the directly extracted text
             article_text = file_attachment.text

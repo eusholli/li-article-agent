@@ -24,7 +24,13 @@ from tavily import TavilyClient
 from typing import List, Union
 from dspy import Prediction
 from html_text_cleaner import HTMLTextCleaner
-from dspy_factory import get_current_lm, get_context_window, check_context_usage
+from dspy_factory import (
+    get_current_lm,
+    get_context_window,
+    check_context_usage,
+    create_component_lm,
+    get_fallback_model,
+)
 
 
 # Load environment variables from .env file
@@ -41,9 +47,18 @@ logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
 class TavilyRetriever(dspy.Retrieve):
-    def __init__(self, k=3, max_total_chars=None):
+    def __init__(self, k=3, max_total_chars=None, model_name: Optional[str] = None):
+        """
+        Initialize the Tavily Retriever.
+
+        Args:
+            k: Number of results to retrieve
+            max_total_chars: Maximum total characters across all passages
+            model_name: Optional model name for RAG components (for consistency with other components)
+        """
         super().__init__(k=k)
         self.tavily = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+        self.model_name = model_name  # Store for potential future use
 
         # Use context window management for intelligent sizing
         if max_total_chars is None:

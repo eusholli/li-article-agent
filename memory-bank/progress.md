@@ -4,6 +4,15 @@
 
 ### ✅ Completed (Current Session)
 
+#### Model Argument Refactoring ✅ NEW MAJOR FEATURE
+- **Enhanced Factory Pattern:** Extended dspy_factory.py with model instance management
+- **Component-Specific Models:** All three target components support optional model parameters
+- **Simplified Command-Line Interface:** Dedicated --generator-model, --judge-model, --rag-model arguments
+- **Removed Redundancy:** Eliminated --model argument since each component now has sensible defaults
+- **Cost Optimization:** Strategic model selection for budget-conscious usage
+- **Performance Caching:** Model instance caching for improved efficiency
+- **Improved User Experience:** Cleaner configuration without fallback complexity
+
 #### Memory Bank Initialization
 - **Project Brief:** Core requirements and success metrics defined
 - **Product Context:** User experience and value proposition documented
@@ -35,11 +44,14 @@
 
 ### ✅ Implementation Complete
 
-#### System Status: READY FOR USE
+#### System Status: ENHANCED AND READY FOR USE
 - **All Core Components:** Fully implemented and integrated
-- **End-to-End Workflow:** Complete article generation pipeline
-- **CLI Interface:** Full command-line tool with comprehensive options
+- **Simplified Model Selection:** Component-specific LLM model selection with dedicated arguments
+- **End-to-End Workflow:** Complete article generation pipeline with flexible model usage
+- **Streamlined CLI Interface:** Clean command-line tool with intuitive model options
+- **Cost Optimization:** Strategic model selection for budget management
 - **Error Handling:** Robust error recovery and user feedback
+- **Updated Documentation:** Comprehensive README.md reflecting new argument structure
 
 #### HTML Text Cleaning Enhancement ✅ NEW FEATURE
 - **HTMLTextCleaner Class:** Comprehensive HTML content processing for RAG system
@@ -47,6 +59,32 @@
 - **Size Management:** Enforces 100,000 character limit across all passages
 - **Quality Optimization:** Removes web scaffolding while preserving meaningful content
 - **Error Resilience:** Graceful handling of malformed HTML with multiple parser fallbacks
+
+#### Model Argument Refactoring ✅ LATEST MAJOR ENHANCEMENT
+- **Enhanced Factory Pattern:** New functions in dspy_factory.py for component-specific model management
+  - `get_model_instance(model_name)`: Creates and caches model instances
+  - `create_component_lm(model_name)`: Creates ConfiguredLM instances for components
+  - `get_fallback_model()`: Provides intelligent fallback to default model
+- **Component Updates:** All target files support optional model parameters
+  - `linkedin_article_generator.py`: Optional generator_model, judge_model, rag_model parameters
+  - `li_article_judge.py`: Optional model_name parameter for scoring operations
+  - `rag.py`: Optional model_name parameter for retrieval operations
+- **Simplified CLI:** Dedicated command-line arguments for component-specific model selection
+  - `--generator-model`: Specify model for article generation (default: openrouter/moonshotai/kimi-k2:free)
+  - `--judge-model`: Specify model for article scoring (default: openrouter/deepseek/deepseek-r1-0528:free)
+  - `--rag-model`: Specify model for web search/retrieval (default: openrouter/deepseek/deepseek-r1-0528:free)
+- **Removed Redundancy:** Eliminated --model argument since each component has sensible defaults
+- **Cost Optimization:** Mix free and paid models based on budget and quality needs
+- **Performance Features:** Model instance caching and intelligent fallbacks
+- **Documentation Update:** Comprehensive README.md overhaul reflecting new structure
+
+#### Word Count Integration ✅ PREVIOUS MAJOR ENHANCEMENT
+- **Unified Target Achievement:** Combined quality and length validation into single check
+- **Enhanced ArticleScoreModel:** Added optional word_count field for integrated scoring
+- **Smart WordCountManager:** Generate targeted improvement instructions based on scoring feedback
+- **Updated DSPy Signatures:** Include word length adjustment instructions in generation prompts
+- **Comprehensive Testing:** 100% test success rate with real-world validation (89% quality, 2204 words)
+- **Simplified Architecture:** Eliminated separate word count validation steps for cleaner logic
 
 ### 📋 Planned Implementation
 
@@ -158,20 +196,29 @@
 ### Architecture Decisions
 1. **Import-Based Integration:** Direct Python imports from li_article_judge.py
 2. **DSPy Framework:** Leverage structured LLM programming
-3. **Iterative Improvement:** Focus on incremental refinement
-4. **Dynamic Adaptation:** Runtime criteria loading for flexibility
+3. **Enhanced Factory Pattern:** Extended dspy_factory.py for component-specific model management
+4. **Model Instance Caching:** Performance optimization through reusable LM instances
+5. **Simplified Model Selection:** Each component has dedicated arguments with sensible defaults
+6. **Iterative Improvement:** Focus on incremental refinement
+7. **Dynamic Adaptation:** Runtime criteria loading for flexibility
+8. **User Experience Focus:** Eliminate redundant arguments and simplify configuration
 
 ### Technical Decisions
 1. **Pydantic Validation:** Type safety and data structure consistency
 2. **Modular Design:** Separate concerns for maintainability
-3. **Error Handling:** Robust failure recovery mechanisms
-4. **Progress Tracking:** Detailed iteration monitoring
+3. **Component-Specific Models:** Each operation can use optimal model for its task
+4. **Intelligent Fallbacks:** Graceful degradation when specific models unavailable
+5. **Model Instance Reuse:** Caching prevents redundant model initialization
+6. **Error Handling:** Robust failure recovery mechanisms
+7. **Progress Tracking:** Detailed iteration monitoring
+8. **Argument Simplification:** Remove redundant options to improve user experience
 
 ### Quality Decisions
 1. **Quality First:** Prioritize content quality over arbitrary metrics
 2. **Balanced Optimization:** Achieve both score and length targets
-3. **Feedback-Driven:** Use scoring results to guide improvements
-4. **Measurable Standards:** Clear, objective quality criteria
+3. **Cost-Quality Balance:** Strategic model selection for optimal cost-quality ratio
+4. **Feedback-Driven:** Use scoring results to guide improvements
+5. **Measurable Standards:** Clear, objective quality criteria
 
 ## Next Steps
 
@@ -192,6 +239,24 @@
 4. **Advanced Testing:** Multiple topics and edge cases
 
 ## Recent Issues Resolved
+
+### Model Argument Redundancy ✅ FIXED
+**Problem:** The `--model` argument was redundant since each component now has its own default value, creating confusion about which model would be used for which component.
+
+**Root Cause:** Legacy design where a global model was used as fallback for all components. After implementing component-specific defaults, the global fallback became unnecessary.
+
+**Files Affected:**
+- `main.py` - Argument parser and model selection logic
+- `README.md` - Documentation and examples
+
+**Solution Applied:**
+1. **Removed --model argument** from argument parser in main.py
+2. **Simplified model selection logic** by removing fallback code
+3. **Updated DSPy setup** to use generator model as default provider
+4. **Updated LinkedInArticleGenerator initialization** to pass models directly
+5. **Comprehensive README.md update** with new examples and model recommendations
+
+**Result:** Cleaner, more intuitive interface where users specify exactly which model to use for each component, with sensible defaults for each.
 
 ### LiteLLM Logging Issue ✅ FIXED
 **Problem:** Sudden appearance of verbose LiteLLM logging messages during article generation:

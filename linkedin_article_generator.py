@@ -16,6 +16,7 @@ from li_article_judge import LinkedInArticleScorer, ArticleScoreModel
 from criteria_extractor import CriteriaExtractor
 from word_count_manager import WordCountManager
 from rag import TavilyRetriever
+from dspy_factory import create_component_lm, get_fallback_model
 
 
 @dataclass
@@ -49,26 +50,32 @@ class ArticleGenerationSignature(dspy.Signature):
 
     generated_article = dspy.OutputField(
         desc="""Generate a complete LinkedIn article in markdown format with these requirements:
-        
+
         MARKDOWN FORMATTING:
         - Use clear header hierarchy (# ## ###)
         - Include bullet points and numbered lists where appropriate
         - Use **bold** and *italic* emphasis for key points
         - Professional paragraph structure with engaging subheadings
-        
+
         CITATION CONTROL:
         - ONLY use citations that appear in the provided RAG context
         - Copy citation format exactly: [text](url)
         - DO NOT create new external references or links
         - Present uncited content as your own analysis/opinion
         - Maintain clear distinction between cited facts and personal insights
-        
+
         CONTENT REQUIREMENTS:
         - Expand the draft/outline into a comprehensive LinkedIn article
         - Target 2000-2500 words of actual content (excluding markdown syntax)
         - Maintain professional LinkedIn tone and structure
         - Objective and third-person, with a more structured, business/technical tone
-        - Address all key points from the original draft"""
+        - Address all key points from the original draft
+
+        WORD LENGTH ADJUSTMENT:
+        - Follow the specific word count guidance provided
+        - If expansion is needed, focus on areas that improve both length and quality
+        - If condensation is needed, preserve all key insights and arguments
+        - Use the guidance to strategically adjust content length while maintaining article quality"""
     )
 
 
@@ -92,24 +99,35 @@ class ArticleImprovementSignature(dspy.Signature):
 
     improved_article = dspy.OutputField(
         desc="""Generate an improved LinkedIn article in markdown format with these requirements:
-        
+
         MARKDOWN FORMATTING:
         - Use clear header hierarchy (# ## ###)
         - Include bullet points and numbered lists where appropriate
         - Use **bold** and *italic* emphasis for key points
         - Professional paragraph structure with engaging subheadings
-        
+
         CITATION CONTROL:
         - ONLY use citations that appear in the provided RAG context
         - Copy citation format exactly: [text](url)
         - DO NOT create new external references or links
         - Present uncited content as your own analysis/opinion
         - Maintain clear distinction between cited facts and personal insights
-        
+
         CONTENT REQUIREMENTS:
         - Address the scoring feedback while maintaining original draft key points
         - Target 2000-2500 words of actual content (excluding markdown syntax)
-        - Maintain professional LinkedIn tone and structure"""
+        - Maintain professional LinkedIn tone and structure
+
+        IMPROVEMENT STRATEGY:
+        - Focus on the specific improvement areas identified in the feedback
+        - Address scoring weaknesses with targeted improvements
+        - Maintain consistency with the original draft's key points
+
+        WORD LENGTH ADJUSTMENT:
+        - Follow the specific word count guidance provided
+        - If expansion is needed, focus on weak scoring areas to improve both length and quality
+        - If condensation is needed, preserve all key insights and arguments
+        - Use the guidance to strategically adjust content length while maintaining article quality"""
     )
 
 
@@ -130,6 +148,9 @@ class LinkedInArticleGenerator:
         max_iterations: int,
         word_count_min: int,
         word_count_max: int,
+        generator_model: Optional[str] = None,
+        judge_model: Optional[str] = None,
+        rag_model: Optional[str] = None,
     ):
         """
         Initialize the LinkedIn Article Generator.
@@ -139,19 +160,40 @@ class LinkedInArticleGenerator:
             max_iterations: Maximum number of improvement iterations
             word_count_min: Minimum target word count
             word_count_max: Maximum target word count
+            generator_model: Optional model name for article generation components
+            judge_model: Optional model name for article scoring components
+            rag_model: Optional model name for RAG retrieval components
         """
         self.target_score_percentage = target_score_percentage
         self.max_iterations = max_iterations
 
-        # Initialize components
-        self.rag = TavilyRetriever(k=10)  # Use TavilyRetriever for web search
-        self.judge = LinkedInArticleScorer()
+        # Store model preferences
+        self.generator_model = generator_model
+        self.judge_model = judge_model
+        self.rag_model = rag_model
+
+        # Initialize components with optional model specifications
+        self.rag = TavilyRetriever(
+            k=10, model_name=rag_model
+        )  # Use TavilyRetriever for web search
+        self.judge = LinkedInArticleScorer(model_name=judge_model)
         self.criteria_extractor = CriteriaExtractor()
         self.word_count_manager = WordCountManager(word_count_min, word_count_max)
 
-        # Initialize DSPy modules
-        self.generator = dspy.ChainOfThought(ArticleGenerationSignature)
-        self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
+        # Initialize DSPy modules with optional model-specific LM instances
+        if generator_model:
+            # Use component-specific model for generation
+            generator_lm = create_component_lm(generator_model, "article_generator")
+            self.generator = dspy.ChainOfThought(
+                ArticleGenerationSignature, lm=generator_lm
+            )
+            self.improver = dspy.ChainOfThought(
+                ArticleImprovementSignature, lm=generator_lm
+            )
+        else:
+            # Fall back to global DSPy configuration
+            self.generator = dspy.ChainOfThought(ArticleGenerationSignature)
+            self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
 
         # Track generation history
         self.versions: List[ArticleVersion] = []
@@ -233,7 +275,7 @@ class LinkedInArticleGenerator:
     def _iterative_improvement_process(
         self, initial_article: str, verbose: bool
     ) -> Dict[str, Any]:
-        """Run the iterative improvement process."""
+        """Run the iterative improvement process with combined quality and length validation."""
         current_article = initial_article
         iteration = 0
 
@@ -252,22 +294,56 @@ class LinkedInArticleGenerator:
                 self.versions[-1].score_results = score_results
 
             current_percentage = score_results.percentage
+            current_word_count = (
+                score_results.word_count
+                or self.word_count_manager.count_words(current_article)
+            )
+            length_status = self.word_count_manager.get_word_count_status(
+                current_word_count
+            )
 
             if verbose:
                 print(
                     f"📊 Current Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({current_percentage:.1f}%)"
                 )
+                print(f"📝 Current Word Count: {current_word_count} words")
                 print(f"🎯 Target Score: ≥{self.target_score_percentage}%")
+                print(
+                    f"📏 Target Word Count: {self.word_count_manager.target_min}-{self.word_count_manager.target_max}"
+                )
 
-            # Check if target achieved
-            if current_percentage >= self.target_score_percentage:
+            # Check if both targets achieved (combined quality + length validation)
+            quality_achieved = current_percentage >= self.target_score_percentage
+            length_achieved = length_status["within_range"]
+
+            if quality_achieved and length_achieved:
                 if verbose:
-                    print(f"🎉 TARGET ACHIEVED! Article reached world-class status!")
+                    print(
+                        f"🎉 BOTH TARGETS ACHIEVED! Article reached world-class status with optimal length!"
+                    )
 
                 self.generation_log.append(
-                    f"Iteration {iteration}: Target achieved ({current_percentage:.1f}%)"
+                    f"Iteration {iteration}: Both targets achieved (Score: {current_percentage:.1f}%, Words: {current_word_count})"
                 )
                 break
+
+            elif quality_achieved and not length_achieved:
+                if verbose:
+                    print(
+                        f"✅ Quality target achieved, but length needs adjustment: {length_status['guidance']}"
+                    )
+
+            elif not quality_achieved and length_achieved:
+                if verbose:
+                    print(
+                        f"✅ Length target achieved, but quality needs improvement: {current_percentage:.1f}% vs {self.target_score_percentage}% target"
+                    )
+
+            else:
+                if verbose:
+                    print(
+                        f"⚠️  Both targets need work: Quality ({current_percentage:.1f}%) and Length ({length_status['guidance']})"
+                    )
 
             # Analyze improvement needs
             improvement_analysis = self._analyze_improvement_needs(
@@ -308,19 +384,34 @@ class LinkedInArticleGenerator:
 
         # Final scoring
         final_score_results = self.judge(current_article)
+        final_word_count = (
+            final_score_results.word_count
+            or self.word_count_manager.count_words(current_article)
+        )
+        final_length_status = self.word_count_manager.get_word_count_status(
+            final_word_count
+        )
+
         if self.versions:
             self.versions[-1].score_results = final_score_results
 
-        # Prepare final result
+        # Prepare final result with combined target achievement
+        final_quality_achieved = (
+            final_score_results.percentage >= self.target_score_percentage
+        )
+        final_length_achieved = final_length_status["within_range"]
+        both_targets_achieved = final_quality_achieved and final_length_achieved
+
         final_result = {
             "final_article": current_article,
             "final_score": final_score_results,
-            "target_achieved": final_score_results.percentage
-            >= self.target_score_percentage,
+            "target_achieved": both_targets_achieved,
+            "quality_achieved": final_quality_achieved,
+            "length_achieved": final_length_achieved,
             "iterations_used": iteration,
             "versions": self.versions,
             "generation_log": self.generation_log,
-            "word_count": self.word_count_manager.count_words(current_article),
+            "word_count": final_word_count,
             "improvement_summary": self._generate_improvement_summary(),
         }
 

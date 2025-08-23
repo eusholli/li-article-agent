@@ -9,7 +9,7 @@ with intelligent context management.
 
 import os
 import sys
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import dspy  # The main DSPy library for working with language models
 from dotenv import load_dotenv  # For loading environment variables from .env file
@@ -19,9 +19,16 @@ load_dotenv()
 
 # Model configurations with context windows and other metadata
 MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "openrouter/deepseek/deepseek-r1-0528:free": {
+        "context_window": 163840,
+        "max_output_tokens": 10000,  # Conservative estimate for generation
+        "cost_per_token": 0.0,  # Free model
+        "provider": "openrouter",
+        "description": "Deepseek-R1 0528 - Free tier with 160K context",
+    },
     "openrouter/moonshotai/kimi-k2:free": {
         "context_window": 32000,
-        "max_output_tokens": 4000,  # Conservative estimate for generation
+        "max_output_tokens": 10000,  # Conservative estimate for generation
         "cost_per_token": 0.0,  # Free model
         "provider": "openrouter",
         "description": "Moonshot AI Kimi K2 - Free tier with 32K context",
@@ -216,6 +223,9 @@ class ConfiguredLM:
 # Global variable to store the configured LM
 _configured_lm: Optional[ConfiguredLM] = None
 
+# Cache for component-specific model instances
+_model_instance_cache: Dict[str, ConfiguredLM] = {}
+
 
 def setup_dspy_provider(
     model_name: str = "openrouter/moonshotai/kimi-k2:free",
@@ -344,6 +354,115 @@ def check_context_usage(text: str, additional_tokens: int = 0) -> Dict[str, Any]
         "fits": available > 0,
         "model_name": lm.model_name,
     }
+
+
+def get_model_instance(model_name: str) -> ConfiguredLM:
+    """
+    Get a dedicated model instance for component-specific use.
+
+    This function creates and caches ConfiguredLM instances for specific models,
+    allowing different components to use different models while maintaining
+    context window awareness and performance optimization through caching.
+
+    Args:
+        model_name: The model identifier (e.g., "openrouter/anthropic/claude-3-sonnet")
+
+    Returns:
+        ConfiguredLM: Enhanced model instance with context window management
+
+    Raises:
+        SystemExit: If no API key is found in environment variables
+    """
+    global _model_instance_cache
+
+    # Return cached instance if available
+    if model_name in _model_instance_cache:
+        return _model_instance_cache[model_name]
+
+    # Check if we have an OpenRouter API key
+    if not os.getenv("OPENROUTER_API_KEY"):
+        print("❌ No OpenRouter API key found in environment variables.")
+        print("Please add OPENROUTER_API_KEY to your .env file")
+        sys.exit(1)
+
+    # Create new ConfiguredLM instance
+    try:
+        configured_lm = ConfiguredLM(model_name)
+
+        # Cache the instance for reuse
+        _model_instance_cache[model_name] = configured_lm
+
+        return configured_lm
+
+    except Exception as e:
+        print(f"❌ Error creating model instance for '{model_name}': {e}")
+        raise
+
+
+def create_component_lm(model_name: str, component_name: str) -> dspy.LM:
+    """
+    Create a DSPy LM instance for specific component use.
+
+    This function creates a DSPy LM object that can be used directly with
+    DSPy modules for component-specific model selection. It leverages the
+    ConfiguredLM infrastructure for context window management.
+
+    Args:
+        model_name: The model identifier
+        component_name: Name of the component for logging/debugging
+
+    Returns:
+        dspy.LM: DSPy language model instance ready for use
+
+    Raises:
+        SystemExit: If model creation fails
+    """
+    try:
+        # Get the configured LM instance
+        configured_lm = get_model_instance(model_name)
+
+        # Return the underlying DSPy LM object
+        return configured_lm.lm
+
+    except Exception as e:
+        print(
+            f"❌ Error creating DSPy LM for component '{component_name}' with model '{model_name}': {e}"
+        )
+        raise
+
+
+def get_fallback_model() -> str:
+    """
+    Get the fallback model name to use when component-specific models aren't specified.
+
+    Returns:
+        str: The model name to use as fallback (current global model or default)
+    """
+    if _configured_lm:
+        return _configured_lm.model_name
+    else:
+        return "openrouter/moonshotai/kimi-k2:free"
+
+
+def clear_model_cache():
+    """
+    Clear the model instance cache.
+
+    This can be useful for testing or when you want to force recreation
+    of model instances (e.g., after changing API keys).
+    """
+    global _model_instance_cache
+    _model_instance_cache.clear()
+
+
+def get_cached_models() -> List[str]:
+    """
+    Get list of currently cached model names.
+
+    Returns:
+        List[str]: List of model names that have cached instances
+    """
+    return list(_model_instance_cache.keys())
 
 
 if __name__ == "__main__":

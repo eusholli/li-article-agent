@@ -90,8 +90,10 @@ python main.py \
   --word-count-min 1800 \
   --word-count-max 2200
 
-# Use different LLM model
-python main.py --model "openrouter/anthropic/claude-3-haiku"
+# Use different LLM models for specific components
+python main.py --generator-model "openrouter/anthropic/claude-3-sonnet" \
+               --judge-model "openrouter/openai/gpt-4o" \
+               --rag-model "openrouter/moonshotai/kimi-k2:free"
 
 # Save output and export results
 python main.py \
@@ -105,16 +107,18 @@ python main.py --quiet --file draft.txt --output article.md
 ### Full Options Reference
 
 ```
---draft, -d          Article draft or outline text (enclose in quotes)
---file, -f           Path to file containing the draft or outline
---target-score, -t   Target score percentage (default: 89.0)
---max-iterations, -i Maximum improvement iterations (default: 10)
---word-count-min     Minimum target word count (default: 2000)
---word-count-max     Maximum target word count (default: 2500)
---model, -m          LLM model to use (default: openrouter/moonshotai/kimi-k2:free)
---output, -o         Output file path for generated article
---export-results     Export detailed results to JSON file
---quiet, -q          Suppress progress messages
+--draft, -d              Article draft or outline text (enclose in quotes)
+--file, -f               Path to file containing the draft or outline
+--target-score, -t       Target score percentage (default: 89.0)
+--max-iterations, -i     Maximum improvement iterations (default: 10)
+--word-count-min         Minimum target word count (default: 2000)
+--word-count-max         Maximum target word count (default: 2500)
+--generator-model        LLM model for article generation (default: openrouter/moonshotai/kimi-k2:free)
+--judge-model            LLM model for article scoring (default: openrouter/deepseek/deepseek-r1-0528:free)
+--rag-model              LLM model for web search/retrieval (default: openrouter/deepseek/deepseek-r1-0528:free)
+--output, -o             Output file path for generated article
+--export-results         Export detailed results to JSON file
+--quiet, -q              Suppress progress messages
 ```
 
 **REACT Features**: The system automatically analyzes your draft and determines whether web research would enhance the article. When beneficial, it searches for relevant context using the Tavily API and integrates findings into the generation process.
@@ -131,19 +135,19 @@ The system supports multiple LLM providers through DSPy:
 **OpenRouter (Recommended)**
 ```bash
 export OPENROUTER_API_KEY="your-api-key"
-python main.py --model "openrouter/anthropic/claude-3-sonnet"
+python main.py --generator-model "openrouter/anthropic/claude-3-sonnet"
 ```
 
 **OpenAI**
 ```bash
 export OPENAI_API_KEY="your-api-key"
-python main.py --model "gpt-4"
+python main.py --generator-model "gpt-4"
 ```
 
 **Anthropic**
 ```bash
 export ANTHROPIC_API_KEY="your-api-key"
-python main.py --model "claude-3-sonnet-20240229"
+python main.py --generator-model "claude-3-sonnet-20240229"
 ```
 
 **Local Models (Ollama)**
@@ -152,7 +156,7 @@ python main.py --model "claude-3-sonnet-20240229"
 ollama serve
 
 # Use local model
-python main.py --model "ollama/llama2"
+python main.py --generator-model "ollama/llama2"
 ```
 
 #### Web Search Setup (Required)
@@ -166,10 +170,38 @@ Get your free Tavily API key at: https://tavily.com/
 
 ### Model Recommendations
 
+#### For Article Generation (--generator-model)
 - **Best Quality**: `openrouter/anthropic/claude-3-sonnet`
 - **Good Balance**: `openrouter/openai/gpt-4-turbo`
-- **Cost-Effective**: `openrouter/moonshotai/kimi-k2:free`
+- **Cost-Effective**: `openrouter/moonshotai/kimi-k2:free` (default)
 - **Local/Private**: `ollama/llama2` or `ollama/mistral`
+
+#### For Article Scoring (--judge-model)
+- **Best Quality**: `openrouter/openai/gpt-4o`
+- **Good Balance**: `openrouter/deepseek/deepseek-r1-0528:free` (default)
+- **Cost-Effective**: `openrouter/moonshotai/kimi-k2:free`
+
+#### For Web Search/RAG (--rag-model)
+- **Best Quality**: `openrouter/anthropic/claude-3-sonnet`
+- **Good Balance**: `openrouter/deepseek/deepseek-r1-0528:free` (default)
+- **Cost-Effective**: `openrouter/moonshotai/kimi-k2:free`
+
+#### Mixed Model Usage Examples
+```bash
+# High-quality generation with cost-effective scoring
+python main.py --generator-model "openrouter/anthropic/claude-3-sonnet" \
+               --judge-model "openrouter/deepseek/deepseek-r1-0528:free"
+
+# All premium models for best results
+python main.py --generator-model "openrouter/anthropic/claude-3-sonnet" \
+               --judge-model "openrouter/openai/gpt-4o" \
+               --rag-model "openrouter/anthropic/claude-3-sonnet"
+
+# All free models for cost-effective operation
+python main.py --generator-model "openrouter/moonshotai/kimi-k2:free" \
+               --judge-model "openrouter/deepseek/deepseek-r1-0528:free" \
+               --rag-model "openrouter/deepseek/deepseek-r1-0528:free"
+```
 
 ## Input Formats
 
@@ -234,6 +266,10 @@ python main.py --file my_draft.txt
 ### Console Output
 ```
 🤖 Setting up DSPy with model: openrouter/moonshotai/kimi-k2:free
+🔧 Model Configuration:
+   Generator: openrouter/moonshotai/kimi-k2:free
+   Judge: openrouter/deepseek/deepseek-r1-0528:free
+   RAG: openrouter/deepseek/deepseek-r1-0528:free
 📝 Using provided draft (247 characters)
 🎯 Target score: ≥89.0%
 🔄 Max iterations: 10
@@ -390,7 +426,7 @@ echo $OPENROUTER_API_KEY
 #### Model Not Found
 ```bash
 # Use supported model
-python main.py --model "openrouter/openai/gpt-3.5-turbo"
+python main.py --generator-model "openrouter/openai/gpt-3.5-turbo"
 
 # Check available models in dspy_factory.py
 ```
@@ -407,12 +443,12 @@ python main.py --file /full/path/to/draft.txt
 ### Performance Issues
 
 #### Slow Generation
-- Use faster models: `openrouter/openai/gpt-3.5-turbo`
+- Use faster models: `--generator-model "openrouter/openai/gpt-3.5-turbo"`
 - Reduce max iterations: `--max-iterations 5`
 - Lower target score: `--target-score 85`
 
 #### High API Costs
-- Use free models: `openrouter/moonshotai/kimi-k2:free`
+- Use free models: `--generator-model "openrouter/moonshotai/kimi-k2:free" --judge-model "openrouter/deepseek/deepseek-r1-0528:free"`
 - Set lower iteration limits
 - Use local models with Ollama
 
@@ -427,12 +463,17 @@ python main.py --file /full/path/to/draft.txt
 ### Python API Usage
 
 ```python
-from linkedin_article_react import LinkedInArticleREACT
+from linkedin_article_generator import LinkedInArticleGenerator
 from dspy_factory import setup_dspy_provider
 
 # Setup (requires both LLM and Tavily API keys)
 setup_dspy_provider("openrouter/anthropic/claude-3-sonnet")
-generator = LinkedInArticleREACT(target_score_percentage=89.0)
+generator = LinkedInArticleGenerator(
+    target_score_percentage=89.0,
+    generator_model="openrouter/anthropic/claude-3-sonnet",
+    judge_model="openrouter/openai/gpt-4o",
+    rag_model="openrouter/deepseek/deepseek-r1-0528:free"
+)
 
 # Generate article with REACT system
 draft = "Your article outline here..."
@@ -453,10 +494,15 @@ generator.export_results("results.json")
 ```python
 import os
 from pathlib import Path
-from linkedin_article_react import LinkedInArticleREACT
+from linkedin_article_generator import LinkedInArticleGenerator
 
-# Initialize REACT generator
-generator = LinkedInArticleREACT(target_score_percentage=89.0)
+# Initialize generator with specific models
+generator = LinkedInArticleGenerator(
+    target_score_percentage=89.0,
+    generator_model="openrouter/anthropic/claude-3-sonnet",
+    judge_model="openrouter/openai/gpt-4o",
+    rag_model="openrouter/deepseek/deepseek-r1-0528:free"
+)
 
 # Process multiple drafts
 draft_files = Path("drafts/").glob("*.txt")

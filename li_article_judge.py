@@ -24,8 +24,8 @@ from typing import Dict, List, Optional
 
 import dspy
 from pydantic import BaseModel, Field, validator
-from dspy_factory import setup_dspy_provider
 from attachments.dspy import Attachments
+from dspy_factory import create_component_lm, get_fallback_model
 
 
 # ==========================================================================
@@ -94,6 +94,9 @@ class ArticleScoreModel(BaseModel):
     performance_tier: str = Field(
         ...,
         description="Performance tier classification (World-class, Strong, Needs work, or Rework needed)",
+    )
+    word_count: Optional[int] = Field(
+        None, description="Current word count of the article being scored"
     )
 
 
@@ -434,10 +437,29 @@ class FileArticleExtractor(dspy.Signature):
 class LinkedInArticleScorer(dspy.Module):
     """Complete LinkedIn article scoring system using DSPy."""
 
-    def __init__(self):
+    def __init__(self, model_name: Optional[str] = None):
+        """
+        Initialize the LinkedIn Article Scorer.
+
+        Args:
+            model_name: Optional model name for scoring components
+        """
         super().__init__()
-        self.criterion_scorer = dspy.ChainOfThought(ArticleCriterionScorer)
-        self.feedback_generator = dspy.ChainOfThought(OverallFeedbackGenerator)
+
+        # Initialize DSPy modules with optional model-specific LM instances
+        if model_name:
+            # Use component-specific model for scoring
+            scorer_lm = create_component_lm(model_name, "article_scorer")
+            self.criterion_scorer = dspy.ChainOfThought(
+                ArticleCriterionScorer, lm=scorer_lm
+            )
+            self.feedback_generator = dspy.ChainOfThought(
+                OverallFeedbackGenerator, lm=scorer_lm
+            )
+        else:
+            # Fall back to global DSPy configuration
+            self.criterion_scorer = dspy.ChainOfThought(ArticleCriterionScorer)
+            self.feedback_generator = dspy.ChainOfThought(OverallFeedbackGenerator)
 
     def forward(self, article_text: str) -> ArticleScoreModel:
         """Score an article across all criteria and generate comprehensive feedback."""
@@ -572,6 +594,9 @@ class LinkedInArticleScorer(dspy.Module):
 
         # dspy.inspect_history(1)  # Inspect history for debugging
 
+        # Calculate word count for the article
+        word_count = len(article_text.split()) if article_text else 0
+
         return ArticleScoreModel(
             total_score=total_score,
             max_score=max_score,
@@ -579,6 +604,7 @@ class LinkedInArticleScorer(dspy.Module):
             category_scores=category_scores,
             overall_feedback=feedback_result.output.overall_feedback,
             performance_tier=tier,
+            word_count=word_count,
         )
 
 
@@ -587,38 +613,21 @@ class LinkedInArticleScorer(dspy.Module):
 # ==========================================================================
 
 
-def initialize_scorer(
-    model_name: str = "openrouter/moonshotai/kimi-k2:free",
-) -> LinkedInArticleScorer:
-    """
-    Initialize the LinkedIn article scoring system.
-
-    Args:
-        model_name: The LLM model to use for scoring
-
-    Returns:
-        LinkedInArticleScorer: Configured scoring system
-    """
-    setup_dspy_provider(model_name)
-    return LinkedInArticleScorer()
-
-
 def score_article(
     article_text: str, scorer: Optional[LinkedInArticleScorer] = None
 ) -> ArticleScoreModel:
     """
-    Score a LinkedIn article using the comprehensive 18-point checklist.
+    Score a LinkedIn article using the comprehensive scoring system.
 
     Args:
-        article_text: The full text of the article to score
+        article_text: The article text to score
         scorer: Optional pre-initialized scorer (will create new one if None)
 
     Returns:
         ArticleScoreModel: Complete scoring results with feedback
     """
     if scorer is None:
-        print("🚀 Initializing LinkedIn Article Scorer...")
-        scorer = initialize_scorer()
+        scorer = LinkedInArticleScorer()
 
     return scorer(article_text)
 
@@ -652,8 +661,6 @@ def analyze_file(
     print(f"📄 Loading file: {file_path}")
 
     try:
-        # Initialize DSPy provider
-        setup_dspy_provider(model_name)
 
         # Load file using Attachments library
         file_attachment = Attachments(file_path)
@@ -703,6 +710,10 @@ def print_score_report(score: ArticleScoreModel) -> None:
         f"🎯 Overall Score: {score.total_score}/{score.max_score} ({score.percentage:.1f}%)"
     )
     print(f"🏆 Performance Tier: {score.performance_tier}")
+
+    # Display word count if available
+    if score.word_count is not None:
+        print(f"📝 Word Count: {score.word_count} words")
     print()
 
     print("📊 CATEGORY BREAKDOWN:")
@@ -853,8 +864,7 @@ def main():
                 sys.exit(1)
 
             # Score the article text
-            scorer = initialize_scorer(args.model)
-            results = score_article(article_text, scorer)
+            results = score_article(article_text, LinkedInArticleScorer())
 
         else:
             # Direct text input
@@ -870,8 +880,7 @@ def main():
                 print(f"🤖 Using model: {args.model}")
 
             # Score the article text
-            scorer = initialize_scorer(args.model)
-            results = score_article(article_text, scorer)
+            results = score_article(article_text, LinkedInArticleScorer())
 
         # Print results
         print_score_report(results)

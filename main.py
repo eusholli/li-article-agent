@@ -18,8 +18,16 @@ import argparse
 import sys
 from pathlib import Path
 
-from linkedin_article_react import LinkedInArticleREACT
+from linkedin_article_generator import LinkedInArticleGenerator
 from dspy_factory import setup_dspy_provider
+from li_article_judge import print_score_report
+from datetime import datetime
+
+import mlflow
+
+current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+mlflow.set_experiment(f"DSPy LinkedIn {current_time}")
+mlflow.dspy.autolog()
 
 
 def read_file(filepath: str) -> str:
@@ -52,20 +60,30 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Basic usage
   python main.py
   python main.py --draft "AI is transforming business..."
   python main.py --file draft.txt
+  
+  # Configuration options
   python main.py --target-score 85 --max-iterations 5
-  python main.py --model "openrouter/anthropic/claude-3-haiku"
   python main.py --output generated_article.md
+  
+  # Component-specific model selection
+  python main.py --generator-model "openrouter/anthropic/claude-3-sonnet" \\
+                 --judge-model "openrouter/openai/gpt-4o" \\
+                 --rag-model "openrouter/moonshotai/kimi-k2:free"
 
-The REACT system will:
-1. Analyze your draft to determine if web research is needed
-2. Search the web for relevant context if beneficial
-3. Generate an initial article with enhanced context
-4. Score it using comprehensive LinkedIn criteria
-5. Iteratively improve until target score (≥89%) is achieved
-6. Display progress and final results with REACT metadata
+The system will:
+1. Generate an initial article from your draft/outline
+2. Score it using comprehensive LinkedIn criteria
+3. Iteratively improve until target score (≥89%) is achieved
+4. Display progress and final results
+
+Model Selection:
+  --generator-model: Model for article generation (default: openrouter/moonshotai/kimi-k2:free)
+  --judge-model: Model for article scoring (default: openrouter/deepseek/deepseek-r1-0528:free)
+  --rag-model: Model for web search/retrieval (default: openrouter/deepseek/deepseek-r1-0528:free)
 
 Target Scores:
   89%+: World-class — publish as is
@@ -114,10 +132,19 @@ Target Scores:
 
     # Model and output options
     parser.add_argument(
-        "--model",
-        "-m",
+        "--generator-model",
         default="openrouter/moonshotai/kimi-k2:free",
-        help="LLM model to use (default: %(default)s)",
+        help="LLM model to use for article generation components (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default="openrouter/deepseek/deepseek-r1-0528:free",
+        help="LLM model to use for article scoring components (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--rag-model",
+        default="openrouter/deepseek/deepseek-r1-0528:free",
+        help="LLM model to use for RAG retrieval components (default: %(default)s)",
     )
     parser.add_argument(
         "--output", "-o", help="Output file path for the generated article"
@@ -130,10 +157,10 @@ Target Scores:
     args = parser.parse_args()
 
     try:
-        # Setup DSPy provider
+        # Setup DSPy provider - use generator model as the default DSPy model
         if not args.quiet:
-            print(f"🤖 Setting up DSPy with model: {args.model}")
-        setup_dspy_provider(args.model)
+            print(f"🤖 Setting up DSPy with model: {args.generator_model}")
+        setup_dspy_provider(args.generator_model)
 
         # Get article draft
         if args.draft:
@@ -176,12 +203,27 @@ The future will likely be hybrid, combining the best of both worlds.
             print("❌ Error: Article draft is too short (minimum 50 characters)")
             sys.exit(1)
 
-        # Initialize REACT generator
-        generator = LinkedInArticleREACT(
+        # Use the specific models (each has its own default)
+        generator_model = args.generator_model
+        judge_model = args.judge_model
+        rag_model = args.rag_model
+
+        # Display model configuration if not quiet
+        if not args.quiet:
+            print(f"🔧 Model Configuration:")
+            print(f"   Generator: {generator_model}")
+            print(f"   Judge: {judge_model}")
+            print(f"   RAG: {rag_model}")
+
+        # Initialize Article Generator with component-specific models
+        generator = LinkedInArticleGenerator(
             target_score_percentage=args.target_score,
             max_iterations=args.max_iterations,
             word_count_min=args.word_count_min,
             word_count_max=args.word_count_max,
+            generator_model=generator_model,
+            judge_model=judge_model,
+            rag_model=rag_model,
         )
 
         if not args.quiet:
@@ -191,6 +233,9 @@ The future will likely be hybrid, combining the best of both worlds.
 
         # Generate article
         result = generator.generate_article(draft_text, verbose=not args.quiet)
+
+        # Print detailed scoring report
+        print_score_report(result["final_score"])
 
         # Save article if output path specified
         if args.output:

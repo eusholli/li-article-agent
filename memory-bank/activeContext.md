@@ -2,52 +2,98 @@
 
 ## Current Implementation Status
 
-### Phase: Enhancement Complete
-**Status:** Draft Scoping Feature Successfully Implemented  
-**Target:** Enhanced article generator with draft analysis and consistency maintenance  
-**Timeline:** Current session enhancement completed
+### Phase: Model Argument Refactoring Complete ✅
+**Status:** Model Argument Structure Refactored and Documentation Updated  
+**Target:** Simplified model selection with dedicated arguments for each component  
+**Timeline:** Current session enhancement completed with improved user experience
 
-### Latest Enhancement: Draft Scoping System
+### Latest Enhancement: Runtime Model Selection System
 
-#### 1. New Draft Analysis Workflow
-- **DraftScopingSignature:** Comprehensive analysis of input drafts before generation
-- **Key Insights Extraction:** Identifies main theme, key points, target audience, core message
-- **Content Gap Analysis:** Detects areas needing expansion for full LinkedIn article
-- **Tone & Style Analysis:** Captures original voice and writing style preferences
-- **Supporting Arguments Mapping:** Identifies existing evidence and areas needing strengthening
+#### 1. Enhanced Factory Pattern
+- **Model Instance Management:** New `get_model_instance()` and `create_component_lm()` functions in dspy_factory.py
+- **Model Caching:** `_model_instance_cache` dictionary for performance optimization
+- **Fallback Logic:** `get_fallback_model()` ensures graceful degradation to default Kimi v2 model
+- **Backward Compatibility:** Existing `setup_dspy_provider()` unchanged for legacy usage
 
-#### 2. Enhanced Generation Process
-- **Scoped Generation:** ArticleGenerationSignature now uses comprehensive draft analysis
-- **Consistency Maintenance:** Generated articles maintain fidelity to original key points
-- **Improved Context:** Both generation and improvement phases reference original draft
-- **Better Targeting:** Content expansion focuses on areas identified during scoping
-- **Quality Preservation:** Ensures generated content stays true to original intent
+#### 2. Component-Specific Model Support
+- **LinkedInArticleGenerator:** Optional `generator_model`, `judge_model`, `rag_model` parameters
+- **LinkedInArticleScorer:** Optional `model_name` parameter for scoring operations
+- **TavilyRetriever:** Optional `model_name` parameter for RAG operations
+- **Graceful Fallbacks:** All components default to global DSPy configuration when no specific model provided
 
-#### 3. Updated System Architecture
-- **Three-Phase Process:** Scoping → Generation → Iterative Improvement
-- **Enhanced DSPy Signatures:** All signatures now include original draft context
-- **Improved Data Flow:** Scoped analysis flows through entire generation pipeline
-- **Better Tracking:** Generation log includes scoping insights and consistency measures
+#### 3. Simplified Command-Line Interface
+- **Dedicated Arguments:** `--generator-model`, `--judge-model`, `--rag-model` for component-specific selection
+- **Default Values:** Each argument has its own sensible default (no universal fallback needed)
+- **Removed Redundancy:** Eliminated `--model` argument since each component now has defaults
+- **Clear Help Text:** Comprehensive usage examples and model selection guidance
+- **Improved UX:** Users can specify models per component without needing a global fallback
+
+#### 4. Cost Optimization Features
+- **Free Model Defaults:** All components default to free Kimi v2 model
+- **Selective Premium:** Use paid models only where needed (e.g., premium for generation, free for RAG)
+- **Flexible Combinations:** Mix and match models based on budget and quality requirements
+- **Performance Tuning:** Choose optimal models per operation type
+
+### Previous Enhancement: Word Count Integration Complete ✅
+**Status:** Word Count Integration Successfully Implemented and Tested  
+**Target:** Radically simplified word count handling with combined quality+length validation  
+**Timeline:** Previous session enhancement completed with 100% test pass rate
+
+### Previous Enhancement: Word Count Integration System
+
+#### 1. Combined Quality + Length Validation
+- **Unified Target Achievement:** Single condition checks `quality_achieved AND length_achieved`
+- **Simplified Logic:** Eliminated separate word count validation steps
+- **Enhanced Progress Reporting:** Shows both quality and length status simultaneously
+- **Intelligent Guidance:** Word count adjustments now target scoring weaknesses
+
+#### 2. Enhanced WordCountManager
+- **Smart Expansion Strategies:** `suggest_expansion_strategies()` uses scoring feedback to target weak areas
+- **Specific Instructions:** `generate_word_length_instructions()` provides targeted guidance
+- **Quality-Aware Adjustments:** Length changes focus on improving both length AND quality
+- **Strategic Condensation:** Preserves key insights while removing redundancy
+
+#### 3. Updated DSPy Signatures
+- **Word Length Adjustment Instructions:** Both generation and improvement signatures include specific length guidance
+- **Scoring-Aware Prompts:** Prompts now guide LLM to adjust length while targeting scoring weaknesses
+- **Quality Preservation:** Clear instructions to maintain article quality during length adjustments
+- **Strategic Focus:** Expansion targets weak scoring areas, condensation preserves strong content
+
+#### 4. Comprehensive Testing
+- **6 Integration Tests:** All tests passed with 100% success rate
+- **Real-World Validation:** Full integration test achieved both quality (89%+) and length (2204 words) targets
+- **Core Functionality:** Verified without API dependencies using mock testing
+- **Architecture Validation:** Confirmed proper component integration and data flow
 
 ## Recent Decisions and Insights
 
 ### Architecture Decisions
 1. **Import-Based Integration:** Use direct Python imports from li_article_judge.py rather than API calls
 2. **DSPy Module Pattern:** Leverage ChainOfThought for structured LLM interactions
-3. **Pydantic Validation:** Ensure type safety and data structure consistency
-4. **Iterative Refinement:** Focus on incremental improvements rather than complete rewrites
+3. **Enhanced Factory Pattern:** Extended dspy_factory.py for component-specific model management
+4. **Model Instance Caching:** Performance optimization through reusable LM instances
+5. **Simplified Model Selection:** Each component has dedicated arguments with sensible defaults
+6. **Pydantic Validation:** Ensure type safety and data structure consistency
+7. **Iterative Refinement:** Focus on incremental improvements rather than complete rewrites
+8. **User Experience Focus:** Eliminate redundant arguments and simplify configuration
 
 ### Key Technical Insights
 - **Scoring Criteria Structure:** Well-organized dictionary in li_article_judge.py enables easy parsing
 - **Weight Distribution:** Strategic Deconstruction & Synthesis (75 points) and First-Order Thinking (45 points) are highest weighted
 - **Performance Tiers:** Clear thresholds provide concrete targets for optimization
 - **Word Count Balance:** Must optimize for both quality and length simultaneously
+- **Model Selection Strategy:** Different models excel at different tasks (generation vs. scoring vs. RAG)
+- **Cost Optimization:** Strategic model selection can significantly reduce API costs
+- **Context Window Management:** Each model instance maintains its own ConfiguredLM wrapper
 
 ### Implementation Patterns
 - **Dynamic Adaptation:** System automatically adjusts to criteria changes
 - **Multi-Constraint Optimization:** Balance score and word count requirements
 - **Feedback-Driven Improvement:** Use scoring results to guide specific improvements
 - **Error Resilience:** Robust handling of LLM response variations
+- **Component-Specific Models:** Each operation can use optimal model for its task
+- **Intelligent Fallbacks:** Graceful degradation when specific models unavailable
+- **Model Instance Reuse:** Caching prevents redundant model initialization
 
 ## Current Work Session
 
@@ -57,9 +103,36 @@
 3. **Product Context:** User experience and value proposition documented
 4. **System Patterns:** Architecture and design patterns established
 5. **Technical Context:** Technology stack and constraints documented
-6. **HTML Text Cleaning System:** ✅ NEW - Robust HTML content processing for RAG
+6. **Runtime Model Selection:** ✅ NEW - Component-specific LLM model selection with cost optimization
+7. **HTML Text Cleaning System:** ✅ PREVIOUS - Robust HTML content processing for RAG
 
-### Latest Enhancement: Refactored Citation-Worthy Content Filter Integration
+### Latest Enhancement: Model Argument Refactoring ✅ NEW
+
+#### 1. Removed Redundant --model Argument
+- **Eliminated Fallback Logic:** Each model argument now has its own default value
+- **Simplified Code:** Removed complex fallback logic in main.py since it's no longer needed
+- **Cleaner Architecture:** No more conditional model selection based on global fallback
+- **Updated DSPy Setup:** Uses generator model as the default DSPy provider model
+
+#### 2. Enhanced Default Configuration
+- **Generator Model:** `openrouter/moonshotai/kimi-k2:free` (cost-effective for content generation)
+- **Judge Model:** `openrouter/deepseek/deepseek-r1-0528:free` (optimized for scoring tasks)
+- **RAG Model:** `openrouter/deepseek/deepseek-r1-0528:free` (efficient for web search/retrieval)
+- **Strategic Defaults:** Each component uses model optimized for its specific task
+
+#### 3. Updated Documentation
+- **README.md Overhaul:** Comprehensive update to reflect new model argument structure
+- **Command Examples:** All examples updated to use component-specific arguments
+- **Model Recommendations:** Enhanced guidance for selecting models per component type
+- **Mixed Usage Examples:** Clear examples of combining different models for cost optimization
+
+#### 4. Improved User Experience
+- **Simplified Configuration:** No need to understand fallback logic or global model concepts
+- **Clear Defaults:** Each argument shows its specific default in help text
+- **Component Focus:** Users think in terms of what each component does rather than global settings
+- **Cost Transparency:** Clear guidance on free vs. paid model combinations
+
+### Previous Enhancement: Refactored Citation-Worthy Content Filter Integration
 
 #### 1. Architectural Refactoring
 - **Moved Citation Classes:** CitationFilter and CitationWorthyFilter relocated from rag.py to html_text_cleaner.py

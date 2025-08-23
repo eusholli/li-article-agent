@@ -417,6 +417,84 @@ class WordCountManager:
                 # Small excess - aim for target range
                 return self.target_max
 
+    def generate_word_length_instructions(
+        self,
+        word_count: int,
+        target_min: int,
+        target_max: int,
+        score_results: Optional[ArticleScoreModel] = None,
+    ) -> str:
+        """
+        Generate specific word length adjustment instructions based on scoring feedback.
+
+        Args:
+            word_count: Current word count
+            target_min: Minimum target word count
+            target_max: Maximum target word count
+            score_results: Current scoring results for targeted guidance
+
+        Returns:
+            str: Detailed instructions for word length adjustment
+        """
+        status = self.get_word_count_status(word_count)
+        instructions = []
+
+        instructions.append("WORD LENGTH ADJUSTMENT INSTRUCTIONS")
+        instructions.append("=" * 40)
+        instructions.append(f"Current: {word_count} words")
+        instructions.append(f"Target: {target_min}-{target_max} words")
+        instructions.append("")
+
+        if status["adjustment_needed"] == "expand":
+            instructions.append(
+                f"📈 EXPANSION NEEDED: +{status['adjustment_amount']} words"
+            )
+            instructions.append(
+                "Focus on weak scoring areas to improve both length AND quality:"
+            )
+            instructions.append("")
+
+            # Get expansion strategies based on scoring weaknesses
+            if score_results is not None:
+                expansion_strategies = self.suggest_expansion_strategies(score_results)
+                instructions.extend(expansion_strategies)
+            else:
+                instructions.extend(
+                    [
+                        "GENERAL EXPANSION TECHNIQUES:",
+                        "• Add concrete examples and case studies",
+                        "• Include relevant data and statistics",
+                        "• Expand on implications and consequences",
+                        "• Add personal insights and experiences",
+                    ]
+                )
+
+        elif status["adjustment_needed"] == "condense":
+            instructions.append(
+                f"📉 CONDENSATION NEEDED: -{status['adjustment_amount']} words"
+            )
+            instructions.append("Preserve all key insights while removing redundancy:")
+            instructions.append("")
+
+            # Get condensation strategies
+            condensation_strategies = self.suggest_condensation_strategies("")
+            instructions.extend(condensation_strategies)
+
+        else:
+            instructions.append("✅ WORD COUNT OPTIMAL")
+            instructions.append(
+                "Maintain current length while focusing on quality improvements"
+            )
+
+        instructions.append("")
+        instructions.append("🎯 QUALITY PRESERVATION PRINCIPLES:")
+        instructions.append("• Keep all core arguments and evidence")
+        instructions.append("• Maintain logical flow and structure")
+        instructions.append("• Preserve unique insights and perspectives")
+        instructions.append("• Keep examples that strongly support your thesis")
+
+        return "\n".join(instructions)
+
     def validate_word_count_change(
         self, old_count: int, new_count: int, target_adjustment: str
     ) -> Dict[str, Any]:

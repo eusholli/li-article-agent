@@ -6,3 +6,5 @@ ddgs
 tavily-python
 beautifulsoup4
 lxml
+mlflow
+

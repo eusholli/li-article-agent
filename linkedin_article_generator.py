@@ -11,12 +11,15 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 import json
 import time
+import re
+import asyncio
 
 from li_article_judge import LinkedInArticleScorer, ArticleScoreModel
 from criteria_extractor import CriteriaExtractor
 from word_count_manager import WordCountManager
 from rag import TavilyRetriever
-from dspy_factory import create_component_lm, get_fallback_model
+from dspy_factory import DspyModelConfig
+from context_window_manager import ContextWindowManager, ContextWindowError
 
 
 @dataclass
@@ -66,7 +69,6 @@ class ArticleGenerationSignature(dspy.Signature):
 
         CONTENT REQUIREMENTS:
         - Expand the draft/outline into a comprehensive LinkedIn article
-        - Target 2000-2500 words of actual content (excluding markdown syntax)
         - Maintain professional LinkedIn tone and structure
         - Objective and third-person, with a more structured, business/technical tone
         - Address all key points from the original draft
@@ -115,7 +117,6 @@ class ArticleImprovementSignature(dspy.Signature):
 
         CONTENT REQUIREMENTS:
         - Address the scoring feedback while maintaining original draft key points
-        - Target 2000-2500 words of actual content (excluding markdown syntax)
         - Maintain professional LinkedIn tone and structure
 
         IMPROVEMENT STRATEGY:
@@ -148,9 +149,7 @@ class LinkedInArticleGenerator:
         max_iterations: int,
         word_count_min: int,
         word_count_max: int,
-        generator_model: Optional[str] = None,
-        judge_model: Optional[str] = None,
-        rag_model: Optional[str] = None,
+        models: Dict[str, DspyModelConfig],
     ):
         """
         Initialize the LinkedIn Article Generator.
@@ -168,32 +167,23 @@ class LinkedInArticleGenerator:
         self.max_iterations = max_iterations
 
         # Store model preferences
-        self.generator_model = generator_model
-        self.judge_model = judge_model
-        self.rag_model = rag_model
+        self.models = models
+
+        # Initialize context window manager
+        self.context_manager = ContextWindowManager(models["generator"])
 
         # Initialize components with optional model specifications
         self.rag = TavilyRetriever(
-            k=10, model_name=rag_model
+            models=models, k=10
         )  # Use TavilyRetriever for web search
-        self.judge = LinkedInArticleScorer(model_name=judge_model)
+        self.judge = LinkedInArticleScorer(models=models)
         self.criteria_extractor = CriteriaExtractor()
         self.word_count_manager = WordCountManager(word_count_min, word_count_max)
 
         # Initialize DSPy modules with optional model-specific LM instances
-        if generator_model:
-            # Use component-specific model for generation
-            generator_lm = create_component_lm(generator_model, "article_generator")
-            self.generator = dspy.ChainOfThought(
-                ArticleGenerationSignature, lm=generator_lm
-            )
-            self.improver = dspy.ChainOfThought(
-                ArticleImprovementSignature, lm=generator_lm
-            )
-        else:
-            # Fall back to global DSPy configuration
-            self.generator = dspy.ChainOfThought(ArticleGenerationSignature)
-            self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
+
+        self.generator = dspy.ChainOfThought(ArticleGenerationSignature)
+        self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
 
         # Track generation history
         self.versions: List[ArticleVersion] = []
@@ -201,29 +191,74 @@ class LinkedInArticleGenerator:
         self.original_draft: Optional[str] = None
         self.search_context: Dict[str, str] = {}
 
+    async def _perform_rag_search(
+        self, draft_text: str, verbose: bool = True
+    ) -> Dict[str, str]:
+        """
+        Perform comprehensive RAG search and return URL-to-content mapping.
+
+        Args:
+            draft_text: The draft article text to extract search queries from
+            verbose: Whether to print progress updates
+
+        Returns:
+            Dictionary mapping URLs to their text content
+        """
+        try:
+
+            # Perform RAG search
+            passages, urls = await self.rag.aforward(draft_text)
+
+            # Create URL-to-content mapping
+            if passages and urls and len(passages) == len(urls):
+                context_dict = dict(zip(urls, passages))
+
+                if verbose:
+                    print(
+                        f"✅ Retrieved {len(context_dict)} URL-content pairs from RAG search"
+                    )
+                    if context_dict:
+                        # Show preview of URLs
+                        urls_preview = list(context_dict.keys())[:3]
+                        for i, url in enumerate(urls_preview, 1):
+                            print(f"   {i}. {url[:80]}...")
+                        if len(context_dict) > 3:
+                            print(f"   ... and {len(context_dict) - 3} more URLs")
+
+                return context_dict
+            else:
+                if verbose:
+                    print("⚠️ No valid content retrieved from RAG search")
+                return {}
+
+        except Exception as e:
+            if verbose:
+                print(f"⚠️ RAG search failed: {e}")
+            return {}
+
     def generate_article(
-        self, draft_or_outline: str, verbose: bool = True
+        self, initial_draft: str, verbose: bool = True
     ) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline.
 
         Args:
-            draft_or_outline: Initial draft article or outline
+            initial_draft: Initial draft article or outline
             verbose: Whether to print progress updates
 
         Returns:
             Dict containing final article, score, and generation metadata
         """
-        return self.generate_article_with_context(draft_or_outline, {}, verbose)
+        return self.generate_article_with_context(initial_draft, {}, verbose)
 
     def generate_article_with_context(
-        self, draft_or_outline: str, context: Dict[str, str] = {}, verbose: bool = True
+        self, initial_draft: str, context: Dict[str, str] = {}, verbose: bool = True
     ) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline with web context.
 
         Args:
-            draft_or_outline: Initial draft article or outline
+            initial_draft: Initial draft article or outline
             context: Dictionary mapping URLs to their text content for citation selection
             verbose: Whether to print progress updates
 
@@ -237,7 +272,7 @@ class LinkedInArticleGenerator:
         # Clear previous generation data
         self.versions.clear()
         self.generation_log.clear()
-        self.original_draft = draft_or_outline
+        self.original_draft = initial_draft
         self.search_context = context or {}
 
         if context and verbose:
@@ -248,8 +283,9 @@ class LinkedInArticleGenerator:
             print(f"📝 Generating initial markdown article from draft...")
 
         initial_article = self._generate_initial_article(
-            draft_or_outline, context, verbose
+            initial_draft, context, verbose
         )
+
         word_count = self.word_count_manager.count_words(initial_article)
 
         initial_version = ArticleVersion(
@@ -422,6 +458,29 @@ class LinkedInArticleGenerator:
     ) -> str:
         """Generate initial markdown article from draft/outline using ArticleGenerationSignature."""
 
+        # Always perform RAG search for comprehensive context
+        if verbose:
+            print("🌐 Performing comprehensive RAG search...")
+
+        # Use asyncio to run the async RAG search
+        try:
+            rag_context = asyncio.run(
+                self._perform_rag_search(draft_or_outline, verbose)
+            )
+        except Exception as e:
+            if verbose:
+                print(f"⚠️ RAG search failed: {e}")
+            rag_context = {}
+
+        # Merge provided context with RAG context (RAG context takes precedence)
+        final_context = {**context, **rag_context}
+
+        if verbose and final_context:
+            print(f"📚 Using combined context: {len(final_context)} URL-content pairs")
+
+        # Store the context for use in improvements
+        self.search_context = final_context
+
         # Prepare generation inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
         word_count_guidance = self.word_count_manager.get_length_optimization_prompt(
@@ -429,13 +488,34 @@ class LinkedInArticleGenerator:
         )
 
         try:
-            # Generate initial article with RAG context
-            result = self.generator(
-                original_draft=draft_or_outline,
-                context=context,
-                scoring_criteria=scoring_criteria,
-                word_count_guidance=word_count_guidance,
-            )
+            # Validate context window before generation
+            context_str = str(final_context) if final_context else ""
+            content_parts = {
+                "draft": draft_or_outline,
+                "context": context_str,
+                "criteria": scoring_criteria,
+                "guidance": word_count_guidance,
+            }
+
+            try:
+                self.context_manager.validate_content(content_parts)
+            except ContextWindowError as e:
+                if verbose:
+                    print(f"⚠️ Context window validation failed: {e}")
+                # Reduce context size and retry
+                final_context = {}
+                context_str = ""
+                content_parts["context"] = ""
+                self.context_manager.validate_content(content_parts)
+
+            # Generate initial article with comprehensive RAG context
+            with dspy.context(lm=self.models["generator"].dspy_lm):
+                result = self.generator(
+                    original_draft=draft_or_outline,
+                    context=final_context,
+                    scoring_criteria=scoring_criteria,
+                    word_count_guidance=word_count_guidance,
+                )
 
             return result.generated_article
 
@@ -542,24 +622,66 @@ class LinkedInArticleGenerator:
     ) -> str:
         """Generate an improved version of the article while maintaining consistency with original draft."""
 
+        # Perform fresh RAG search for improvement context
+        # This ensures we get updated/additional context for each iteration
+        try:
+            fresh_rag_context = asyncio.run(
+                self._perform_rag_search(self._get_original_draft(), verbose=False)
+            )
+            # Merge with existing context (fresh context takes precedence)
+            combined_context = {**self.search_context, **fresh_rag_context}
+            # Update stored context for future iterations
+            self.search_context = combined_context
+        except Exception as e:
+            # If fresh search fails, use existing context
+            combined_context = self.search_context
+
         # Prepare improvement inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
         word_count_guidance = self.word_count_manager.get_length_optimization_prompt(
             self.word_count_manager.count_words(current_article), score_results
         )
 
-        # Generate improved article with original draft context
-        result = self.improver(
-            current_article=current_article,
-            original_draft=self._get_original_draft(),
-            context=self.search_context,
-            score_feedback=improvement_analysis["detailed_feedback"],
-            scoring_criteria=scoring_criteria,
-            word_count_guidance=word_count_guidance,
-            improvement_focus=improvement_analysis["focus_summary"],
-        )
+        try:
+            # Validate context window before improvement
+            context_str = str(combined_context) if combined_context else ""
+            content_parts = {
+                "current_article": current_article,
+                "original_draft": self._get_original_draft(),
+                "context": context_str,
+                "feedback": improvement_analysis["detailed_feedback"],
+                "criteria": scoring_criteria,
+                "guidance": word_count_guidance,
+                "focus": improvement_analysis["focus_summary"],
+            }
 
-        return result.improved_article
+            try:
+                self.context_manager.validate_content(content_parts)
+            except ContextWindowError as e:
+                print(f"⚠️ Context window validation failed for improvement: {e}")
+                # Reduce context size and retry
+                combined_context = {}
+                context_str = ""
+                content_parts["context"] = ""
+                self.context_manager.validate_content(content_parts)
+
+            # Generate improved article with comprehensive RAG context
+            with dspy.context(lm=self.models["generator"].dspy_lm):
+                result = self.improver(
+                    current_article=current_article,
+                    original_draft=self._get_original_draft(),
+                    context=combined_context,
+                    score_feedback=improvement_analysis["detailed_feedback"],
+                    scoring_criteria=scoring_criteria,
+                    word_count_guidance=word_count_guidance,
+                    improvement_focus=improvement_analysis["focus_summary"],
+                )
+
+            return result.improved_article
+
+        except Exception as e:
+            print(f"⚠️ Improvement generation failed, returning current article: {e}")
+            return current_article
 
     def _get_original_draft(self) -> str:
         """Get the original draft for reference during improvements."""
@@ -691,30 +813,4 @@ class LinkedInArticleGenerator:
 
 
 if __name__ == "__main__":
-    # Example usage
-    generator = LinkedInArticleGenerator(
-        target_score_percentage=89.0,
-        max_iterations=10,
-        word_count_min=2000,
-        word_count_max=2500,
-    )
-
-    sample_draft = """
-    # The Future of AI in Business
-    
-    AI is transforming how businesses operate. Companies need to adapt or risk being left behind.
-    
-    Key areas:
-    - Automation of routine tasks
-    - Better customer insights
-    - Improved decision making
-    
-    Challenges include data privacy and employee training.
-    """
-
-    print("Testing LinkedIn Article Generator with sample draft...")
-    result = generator.generate_article(sample_draft, verbose=True)
-
-    print(
-        f"\nGeneration completed. Final article length: {len(result['final_article'])} characters"
-    )
+    print("This module is intended to be imported and used within other scripts.")

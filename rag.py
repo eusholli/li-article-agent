@@ -13,7 +13,7 @@ Based on the implementation guide in rag-implementation.md, this module provides
 import dspy
 import os
 from ddgs import DDGS
-from typing import List, Union, Optional
+from typing import Dict, List, Union, Optional
 import logging
 from tavily import TavilyClient
 import asyncio
@@ -24,13 +24,9 @@ from tavily import TavilyClient
 from typing import List, Union
 from dspy import Prediction
 from html_text_cleaner import HTMLTextCleaner
-from dspy_factory import (
-    get_current_lm,
-    get_context_window,
-    check_context_usage,
-    create_component_lm,
-    get_fallback_model,
-)
+from dspy_factory import DspyModelConfig
+from context_window_manager import ContextWindowManager
+from pydantic import BaseModel, Field
 
 
 # Load environment variables from .env file
@@ -46,8 +42,38 @@ logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
+class TopicExtractionResult(BaseModel):
+    """Result structure for topic extraction."""
+
+    main_topic: str = Field(
+        ...,
+        description="Main topic/subject of the article for web search",
+    )
+    search_query: List[str] = Field(
+        ...,
+        description="A list of at most 5 optimized search queries to find relevant context for the topic",
+    )
+    needs_research: bool = Field(
+        ...,
+        description="Boolean: whether this topic would benefit from web research context",
+    )
+
+
+class TopicExtractionSignature(dspy.Signature):
+    """Extract the main topic for web search from article draft or outline."""
+
+    draft_or_outline = dspy.InputField(
+        desc="Article draft or outline to analyze for main topic"
+    )
+
+    output: TopicExtractionResult = dspy.OutputField(
+        desc="Extracted main topic, search queries, and research needs flag"
+    )
+
+
 class TavilyRetriever(dspy.Retrieve):
-    def __init__(self, k=3, max_total_chars=None, model_name: Optional[str] = None):
+
+    def __init__(self, models: Dict[str, DspyModelConfig], k=3, max_total_chars=None):
         """
         Initialize the Tavily Retriever.
 
@@ -58,30 +84,29 @@ class TavilyRetriever(dspy.Retrieve):
         """
         super().__init__(k=k)
         self.tavily = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-        self.model_name = model_name  # Store for potential future use
+        self.models = models  # Store for potential future use
+        self.topic_extractor = dspy.ChainOfThought(TopicExtractionSignature)
 
-        # Use context window management for intelligent sizing
+        # Use centralized context window management for intelligent sizing
         if max_total_chars is None:
             try:
-                # Reserve space for prompts and output, use 60% of context for RAG content
-                context_window = get_context_window()
-                lm = get_current_lm()
-                available_for_rag = int(
-                    (context_window - lm.get_max_output_tokens()) * 0.6
-                )
-                max_total_chars = max(50000, available_for_rag)  # Minimum 50K chars
+                # Use centralized context manager for RAG limit calculation
+                context_manager = ContextWindowManager(models["generator"])
+                max_total_chars = context_manager.get_rag_limit()
                 print(
-                    f"🧠 Auto-sizing RAG content to {max_total_chars:,} chars based on {context_window:,} token context window"
+                    f"🧠 Using centralized RAG limit: {max_total_chars:,} chars (35% allocation)"
                 )
             except Exception as e:
                 logger.warning(
-                    f"Could not determine context window, using default: {e}"
+                    f"Could not determine context window from manager, using default: {e}"
                 )
                 max_total_chars = 100000
 
         self.max_total_chars = max_total_chars
-        self.text_cleaner = HTMLTextCleaner(max_total_chars=max_total_chars)
-        dspy.settings.configure(rm=self)
+        self.text_cleaner = HTMLTextCleaner(
+            models=models, max_total_chars=max_total_chars
+        )
+        # dspy.settings.configure(rm=self)
 
     async def fetch_and_extract(self, query: List[str], k: int):
 
@@ -150,7 +175,21 @@ class TavilyRetriever(dspy.Retrieve):
             print("⚠️ No passages collected")
             return [], []
 
-    async def aforward(self, queries: List[str], k=None, **kwargs):
+    async def aforward(self, article_draft: str, k=None, **kwargs):
+
+        with dspy.context(models=self.models["rag"].dspy_lm):
+            topic_results = self.topic_extractor(draft_or_outline=article_draft).output
+
+        if topic_results.needs_research:
+            queries = topic_results.search_query
+            print(f"Main topic identified: {topic_results.main_topic}")
+            print(f"🔍 Extracted search queries: {queries}")
+            queries = [
+                topic_results.main_topic
+            ] + queries  # Always include main topic at the front
+        else:
+            print("No research needed based on topic extraction.")
+            return [], []
 
         k = k if k is not None else self.k
         passages, urls = await self.fetch_and_extract(queries, k)
@@ -158,80 +197,5 @@ class TavilyRetriever(dspy.Retrieve):
         return passages, urls
 
 
-class TavilyRAGModule(dspy.Module):
-    """
-    A complete RAG module using TavilyRM for retrieval and markdown generation.
-    """
-
-    def __init__(
-        self,
-        k: int = 3,
-        include_raw_content: bool = True,
-        max_total_chars: Optional[int] = None,
-    ):
-        """
-        Initialize the Tavily RAG module.
-
-        Args:
-            k (int): Number of results to retrieve
-            include_raw_content (bool): Whether to include raw content from pages
-            max_total_chars (Optional[int]): Maximum total characters across all passages.
-                                           If None, auto-calculated based on context window.
-        """
-        super().__init__()
-        self.retrieve = TavilyRetriever(k=k, max_total_chars=max_total_chars)
-        self.k = k
-
-    def forward(self, queries: List[str]) -> dspy.Prediction:
-        """
-        Process a queries through retrieval and markdown generation.
-
-        Args:
-            queries (str): The queries to answer
-
-        Returns:
-            dspy.Prediction: Contains the queries, retrieved context, and markdown answer
-        """
-        try:
-            # Retrieve relevant passages and URLs
-            [passages, urls] = asyncio.run(self.retrieve.aforward(queries))
-
-            logger.info(f"Retrieved {len(passages)} passages and {len(urls)} URLs")
-
-            return dspy.Prediction(
-                passages=passages,
-                urls=urls,
-            )
-
-        except Exception as e:
-            logger.error(f"Error in TavilyRAGModule forward pass: {str(e)}")
-            return dspy.Prediction(
-                passages=[],
-                urls=[],
-            )
-
-
-# Example usage and testing functions
-def test_rag_system():
-    """
-    Test function to demonstrate RAG system functionality.
-    """
-    try:
-
-        # Test full RAG module (requires DSPy LM configuration)
-        print("\n" + "=" * 50)
-        print("Testing full RAG module...")
-
-        # Note: This requires proper DSPy LM configuration
-        rag_module = TavilyRAGModule(k=10)
-        response = rag_module("What are the latest developments in AI for 2025?")
-
-        print("RAG system test completed successfully!")
-
-    except Exception as e:
-        print(f"Error in test: {str(e)}")
-
-
 if __name__ == "__main__":
-    # Run tests when module is executed directly
-    test_rag_system()
+    print("Part of a larger system; run main.py for end-to-end tests.")

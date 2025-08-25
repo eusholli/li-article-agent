@@ -19,11 +19,15 @@ import sys
 from pathlib import Path
 
 from linkedin_article_generator import LinkedInArticleGenerator
-from dspy_factory import setup_dspy_provider
+from dspy_factory import get_openrouter_model, DspyModelConfig
 from li_article_judge import print_score_report
 from datetime import datetime
+from typing import Dict, Any
 
 import mlflow
+
+# Default model constant for fallback
+DEFAULT_MODEL_NAME = "moonshotai/kimi-k2:free"
 
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 mlflow.set_experiment(f"DSPy LinkedIn {current_time}")
@@ -53,6 +57,60 @@ def save_article(article: str, filepath: str):
         print(f"❌ Error saving article: {e}")
 
 
+def resolve_model(
+    model_name: str, default_model: str, default_constant: str, temp: float = 0.0
+) -> DspyModelConfig:
+    """
+    Resolve a model using cascading fallback logic:
+    1. Try get_openrouter_model(model_name)
+    2. If None, try get_openrouter_model(default_model)
+    3. If None, try get_openrouter_model(default_constant)
+    4. If None, raise appropriate error
+
+    Args:
+        model_name: The primary model to try
+        default_model: The fallback model from --model argument
+        default_constant: The constant DEFAULT_MODEL_NAME
+
+    Returns:
+        DspyModelConfig with resolved model configuration
+
+    Raises:
+        RuntimeError: If no models can be resolved
+    """
+    # Try the primary model first
+    model_config = get_openrouter_model(model_name, temp=temp)
+    if model_config is not None:
+        return model_config
+
+    print(
+        f"⚠️  Model '{model_name}' not found, falling back to default model '{default_model}'"
+    )
+
+    # Try the default model
+    model_config = get_openrouter_model(default_model)
+    if model_config is not None:
+        return model_config
+
+    print(
+        f"⚠️  Default model '{default_model}' not found, falling back to constant '{default_constant}'"
+    )
+
+    # Try the constant default
+    model_config = get_openrouter_model(default_constant)
+    if model_config is not None:
+        return model_config
+
+    # If all fail, raise an error
+    raise RuntimeError(
+        f"❌ Unable to resolve any model. Tried:\n"
+        f"  1. Primary model: '{model_name}'\n"
+        f"  2. Default model: '{default_model}'\n"
+        f"  3. Constant model: '{default_constant}'\n"
+        f"Please check your OpenRouter API key and model names."
+    )
+
+
 def main():
     """Main entry point for the LinkedIn Article Generator."""
     parser = argparse.ArgumentParser(
@@ -70,9 +128,9 @@ Examples:
   python main.py --output generated_article.md
   
   # Component-specific model selection
-  python main.py --generator-model "openrouter/anthropic/claude-3-sonnet" \\
-                 --judge-model "openrouter/openai/gpt-4o" \\
-                 --rag-model "openrouter/moonshotai/kimi-k2:free"
+  python main.py --generator-model "anthropic/claude-3-sonnet" \\
+                 --judge-model "openai/gpt-4o" \\
+                 --rag-model "moonshotai/kimi-k2:free"
 
 The system will:
 1. Generate an initial article from your draft/outline
@@ -81,9 +139,9 @@ The system will:
 4. Display progress and final results
 
 Model Selection:
-  --generator-model: Model for article generation (default: openrouter/moonshotai/kimi-k2:free)
-  --judge-model: Model for article scoring (default: openrouter/deepseek/deepseek-r1-0528:free)
-  --rag-model: Model for web search/retrieval (default: openrouter/deepseek/deepseek-r1-0528:free)
+  --generator-model: Model for article generation (default: moonshotai/kimi-k2:free)
+  --judge-model: Model for article scoring (default: deepseek/deepseek-r1-0528:free)
+  --rag-model: Model for web search/retrieval (default: deepseek/deepseek-r1-0528:free)
 
 Target Scores:
   89%+: World-class — publish as is
@@ -132,18 +190,23 @@ Target Scores:
 
     # Model and output options
     parser.add_argument(
+        "--model",
+        default="moonshotai/kimi-k2:free",
+        help="Default model to use if specialized models are not found (default: %(default)s)",
+    )
+    parser.add_argument(
         "--generator-model",
-        default="openrouter/moonshotai/kimi-k2:free",
+        default="moonshotai/kimi-k2:free",
         help="LLM model to use for article generation components (default: %(default)s)",
     )
     parser.add_argument(
         "--judge-model",
-        default="openrouter/deepseek/deepseek-r1-0528:free",
+        default="deepseek/deepseek-r1-0528:free",
         help="LLM model to use for article scoring components (default: %(default)s)",
     )
     parser.add_argument(
         "--rag-model",
-        default="openrouter/deepseek/deepseek-r1-0528:free",
+        default="deepseek/deepseek-r1-0528:free",
         help="LLM model to use for RAG retrieval components (default: %(default)s)",
     )
     parser.add_argument(
@@ -157,10 +220,34 @@ Target Scores:
     args = parser.parse_args()
 
     try:
-        # Setup DSPy provider - use generator model as the default DSPy model
+        # Resolve all models using cascading fallback logic
         if not args.quiet:
-            print(f"🤖 Setting up DSPy with model: {args.generator_model}")
-        setup_dspy_provider(args.generator_model)
+            print(f"🔍 Resolving models with fallback logic...")
+
+        try:
+            resolved_generator = resolve_model(
+                args.generator_model, args.model, DEFAULT_MODEL_NAME, temp=0.5
+            )
+            resolved_judge = resolve_model(
+                args.judge_model, args.model, DEFAULT_MODEL_NAME
+            )
+            resolved_rag = resolve_model(args.rag_model, args.model, DEFAULT_MODEL_NAME)
+        except RuntimeError as e:
+            print(f"{e}")
+            sys.exit(1)
+
+        models = {
+            "generator": resolved_generator,
+            "judge": resolved_judge,
+            "rag": resolved_rag,
+        }
+
+        # Setup DSPy with the resolved generator model
+        if not args.quiet:
+            print(
+                f"🤖 Setting up DSPy with resolved generator model: {resolved_generator.name}"
+            )
+        dspy.configure(lm=resolved_generator.dspy_lm)
 
         # Get article draft
         if args.draft:
@@ -203,17 +290,18 @@ The future will likely be hybrid, combining the best of both worlds.
             print("❌ Error: Article draft is too short (minimum 50 characters)")
             sys.exit(1)
 
-        # Use the specific models (each has its own default)
-        generator_model = args.generator_model
-        judge_model = args.judge_model
-        rag_model = args.rag_model
-
-        # Display model configuration if not quiet
+        # Display resolved model configuration if not quiet
         if not args.quiet:
-            print(f"🔧 Model Configuration:")
-            print(f"   Generator: {generator_model}")
-            print(f"   Judge: {judge_model}")
-            print(f"   RAG: {rag_model}")
+            print(f"🔧 Resolved Model Configuration:")
+            print(
+                f"   Generator: {models['generator'].name}, Temp: 0.5, max_output_tokens: {models['generator'].max_output_tokens} "
+            )
+            print(
+                f"   Judge: {models['judge'].name}, Temp: 0.0, max_output_tokens: {models['judge'].max_output_tokens} "
+            )
+            print(
+                f"   RAG: {models['rag'].name}, Temp: 0.0, max_output_tokens: {models['rag'].max_output_tokens} "
+            )
 
         # Initialize Article Generator with component-specific models
         generator = LinkedInArticleGenerator(
@@ -221,9 +309,7 @@ The future will likely be hybrid, combining the best of both worlds.
             max_iterations=args.max_iterations,
             word_count_min=args.word_count_min,
             word_count_max=args.word_count_max,
-            generator_model=generator_model,
-            judge_model=judge_model,
-            rag_model=rag_model,
+            models=models,
         )
 
         if not args.quiet:

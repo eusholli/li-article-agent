@@ -9,10 +9,11 @@ removes scaffolding content, and applies intelligent size limiting.
 from bs4 import BeautifulSoup, Comment, Tag
 import re
 import logging
-from typing import List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union
 from html import unescape
 import dspy
-from dspy_factory import get_current_lm, get_context_window, check_context_usage
+from dspy_factory import DspyModelConfig
+from context_window_manager import ContextWindowManager
 
 
 class CitationFilter(dspy.Signature):
@@ -27,9 +28,10 @@ class CitationFilter(dspy.Signature):
 class CitationWorthyFilter(dspy.Module):
     """DSPy module that filters passages to extract only citation-worthy content."""
 
-    def __init__(self):
+    def __init__(self, models: Dict[str, DspyModelConfig]):
         super().__init__()
         self.filter = dspy.Predict(CitationFilter)
+        self.models = models
 
     def forward(self, passages: List[str]) -> List[str]:
         """
@@ -55,7 +57,8 @@ class CitationWorthyFilter(dspy.Module):
         for i, passage in enumerate(passages):
             try:
                 # Process single passage to avoid context overflow
-                result = self.filter(passage=passage)
+                with dspy.context(lm=self.models["rag"].dspy_lm):
+                    result = self.filter(passage=passage)
                 if result.quality_sentences and result.quality_sentences.strip():
                     filtered_passages.append(result.quality_sentences)
                     print(f"  ✅ Passage {i+1}: Passage filtered successfully")
@@ -88,7 +91,10 @@ class HTMLTextCleaner:
     """
 
     def __init__(
-        self, min_content_length: int = 200, max_total_chars: Optional[int] = None
+        self,
+        models: Dict[str, DspyModelConfig],
+        max_total_chars: int,
+        min_content_length: int = 200,
     ):
         """
         Initialize the HTML text cleaner.
@@ -99,29 +105,11 @@ class HTMLTextCleaner:
                            If None, auto-calculated based on context window.
         """
         self.min_content_length = min_content_length
-
-        # Use context window management for intelligent sizing
-        if max_total_chars is None:
-            try:
-                # Reserve space for prompts and output, use 50% of context for cleaned content
-                context_window = get_context_window()
-                lm = get_current_lm()
-                available_for_content = int(
-                    (context_window - lm.get_max_output_tokens()) * 0.5
-                )
-                max_total_chars = max(50000, available_for_content)  # Minimum 50K chars
-                self.logger.info(
-                    f"🧠 Auto-sizing HTML cleaner to {max_total_chars:,} chars based on {context_window:,} token context window"
-                )
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not determine context window, using default: {e}"
-                )
-                max_total_chars = 50000
+        self.models = models  # Store for potential future use
 
         self.max_total_chars = max_total_chars
         self.logger = logging.getLogger(__name__)
-        self.citation_filter = CitationWorthyFilter()
+        self.citation_filter = CitationWorthyFilter(models=models)
 
         # Calculate safe passage size for DSPy processing
         self.max_passage_size = self._calculate_max_passage_size()
@@ -279,35 +267,20 @@ class HTMLTextCleaner:
     def _calculate_max_passage_size(self) -> int:
         """Calculate maximum size for individual passages to fit in DSPy context window."""
         try:
-            lm = get_current_lm()
-            context_window = lm.get_context_window()
-
-            # Reserve space for:
-            # - DSPy prompt instructions (~500 tokens)
-            # - Input/output formatting (~200 tokens)
-            # - Safety margin (~300 tokens)
-            overhead_tokens = 1000
-
-            # Convert to characters (rough: 1 token ≈ 4 chars)
-            overhead_chars = overhead_tokens * 4
-
-            # Use remaining space for passage content
-            max_passage_chars = (
-                context_window * 4 - overhead_chars - lm.get_max_output_tokens() * 4
-            )
-
-            # Ensure reasonable minimum and maximum
-            max_passage_chars = max(5000, min(max_passage_chars, 50000))
+            # Use centralized context manager for passage limit calculation
+            context_manager = ContextWindowManager(self.models["rag"])
+            max_passage_chars = context_manager.get_passage_limit()
 
             self.logger.info(
-                f"🧠 Max passage size for DSPy: {max_passage_chars:,} chars "
-                f"(context: {context_window:,} tokens)"
+                f"🧠 Using centralized passage limit: {max_passage_chars:,} chars for DSPy processing"
             )
 
             return max_passage_chars
 
         except Exception as e:
-            self.logger.warning(f"Could not calculate max passage size: {e}")
+            self.logger.warning(
+                f"Could not get passage limit from context manager: {e}"
+            )
             return 20000  # Conservative fallback
 
     def _preprocess_passages_for_dspy(self, passages: List[str]) -> List[str]:

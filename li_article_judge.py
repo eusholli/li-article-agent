@@ -25,7 +25,8 @@ from typing import Dict, List, Optional
 import dspy
 from pydantic import BaseModel, Field, validator
 from attachments.dspy import Attachments
-from dspy_factory import create_component_lm, get_fallback_model
+from dspy_factory import DspyModelConfig
+from context_window_manager import ContextWindowManager, ContextWindowError
 
 
 # ==========================================================================
@@ -437,7 +438,7 @@ class FileArticleExtractor(dspy.Signature):
 class LinkedInArticleScorer(dspy.Module):
     """Complete LinkedIn article scoring system using DSPy."""
 
-    def __init__(self, model_name: Optional[str] = None):
+    def __init__(self, models: Dict[str, DspyModelConfig]):
         """
         Initialize the LinkedIn Article Scorer.
 
@@ -446,20 +447,10 @@ class LinkedInArticleScorer(dspy.Module):
         """
         super().__init__()
 
-        # Initialize DSPy modules with optional model-specific LM instances
-        if model_name:
-            # Use component-specific model for scoring
-            scorer_lm = create_component_lm(model_name, "article_scorer")
-            self.criterion_scorer = dspy.ChainOfThought(
-                ArticleCriterionScorer, lm=scorer_lm
-            )
-            self.feedback_generator = dspy.ChainOfThought(
-                OverallFeedbackGenerator, lm=scorer_lm
-            )
-        else:
-            # Fall back to global DSPy configuration
-            self.criterion_scorer = dspy.ChainOfThought(ArticleCriterionScorer)
-            self.feedback_generator = dspy.ChainOfThought(OverallFeedbackGenerator)
+        self.models = models
+        self.context_manager = ContextWindowManager(models["judge"])
+        self.criterion_scorer = dspy.ChainOfThought(ArticleCriterionScorer)
+        self.feedback_generator = dspy.ChainOfThought(OverallFeedbackGenerator)
 
     def forward(self, article_text: str) -> ArticleScoreModel:
         """Score an article across all criteria and generate comprehensive feedback."""
@@ -496,11 +487,12 @@ class LinkedInArticleScorer(dspy.Module):
 
                 for attempt in range(max_retries):
                     try:
-                        result = self.criterion_scorer(
-                            article_text=article_text,
-                            criterion_question=criterion["question"],
-                            scale_description=scale_desc,
-                        )
+                        with dspy.context(lm=self.models["judge"].dspy_lm):
+                            result = self.criterion_scorer(
+                                article_text=article_text,
+                                criterion_question=criterion["question"],
+                                scale_description=scale_desc,
+                            )
 
                         # dspy.inspect_history(1)  # Inspect history for debugging
 
@@ -586,11 +578,12 @@ class LinkedInArticleScorer(dspy.Module):
 
         category_breakdown = "\n".join(category_breakdown_parts)
 
-        feedback_result = self.feedback_generator(
-            article_text=article_text,
-            total_score=f"{total_score}/{max_score}",
-            category_breakdown=category_breakdown,
-        )
+        with dspy.context(lm=self.models["judge"].dspy_lm):
+            feedback_result = self.feedback_generator(
+                article_text=article_text,
+                total_score=f"{total_score}/{max_score}",
+                category_breakdown=category_breakdown,
+            )
 
         # dspy.inspect_history(1)  # Inspect history for debugging
 
@@ -611,89 +604,6 @@ class LinkedInArticleScorer(dspy.Module):
 # ==========================================================================
 # SECTION 4: SCORING AND REPORTING FUNCTIONS
 # ==========================================================================
-
-
-def score_article(
-    article_text: str, scorer: Optional[LinkedInArticleScorer] = None
-) -> ArticleScoreModel:
-    """
-    Score a LinkedIn article using the comprehensive scoring system.
-
-    Args:
-        article_text: The article text to score
-        scorer: Optional pre-initialized scorer (will create new one if None)
-
-    Returns:
-        ArticleScoreModel: Complete scoring results with feedback
-    """
-    if scorer is None:
-        scorer = LinkedInArticleScorer()
-
-    return scorer(article_text)
-
-
-def analyze_file(
-    file_path: str,
-    model_name: str = "openrouter/moonshotai/kimi-k2:free",
-    scorer: Optional[LinkedInArticleScorer] = None,
-) -> ArticleScoreModel:
-    """
-    Analyze a LinkedIn article from a file using the Attachments library.
-
-    This function uses the Attachments library to extract text from various file formats
-    (PDF, DOCX, images, etc.) and then scores the extracted article text using the
-    comprehensive 18-point LinkedIn article quality checklist.
-
-    Args:
-        file_path: Path to the file containing the article (supports PDF, DOCX, images, etc.)
-        model_name: The LLM model to use for scoring and text extraction
-        scorer: Optional pre-initialized scorer (will create new one if None)
-
-    Returns:
-        ArticleScoreModel: Complete scoring results with feedback
-
-    Raises:
-        ImportError: If the attachments library is not installed
-        FileNotFoundError: If the specified file doesn't exist
-        Exception: For other file processing or analysis errors
-    """
-
-    print(f"📄 Loading file: {file_path}")
-
-    try:
-
-        # Load file using Attachments library
-        file_attachment = Attachments(file_path)
-
-        # Check if we got any content
-        if not file_attachment.text or len(file_attachment.text.strip()) < 50:
-            # Try to extract text using DSPy if direct text extraction is insufficient
-            print("🔄 Extracting article text from file...")
-            extractor = dspy.ChainOfThought(FileArticleExtractor)
-            extraction_result = extractor(file_content=file_attachment)
-            article_text = extraction_result.output.article_text
-        else:
-            # Use the directly extracted text
-            article_text = file_attachment.text
-
-        # Validate extracted text
-        if not article_text or len(article_text.strip()) < 50:
-            raise ValueError(
-                f"Could not extract sufficient text from file '{file_path}'. "
-                f"Extracted {len(article_text) if article_text else 0} characters. "
-                "Please ensure the file contains readable article content."
-            )
-
-        print(f"✅ Successfully extracted {len(article_text)} characters from file")
-        print(f"🤖 Using model: {model_name}")
-
-        # Score the extracted article text using existing scoring system
-        return score_article(article_text, scorer)
-
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {file_path}")
-    except Exception as e:
-        raise Exception(f"Error analyzing file '{file_path}': {str(e)}")
 
 
 def print_score_report(score: ArticleScoreModel) -> None:
@@ -836,70 +746,5 @@ Scoring Tiers:
     return parser.parse_args()
 
 
-def main():
-    """Main entry point for the LinkedIn article judge."""
-    args = parse_arguments()
-
-    try:
-        # Handle different input methods
-        if args.analyze_file:
-            # Use Attachments library for file analysis
-            if not args.quiet:
-                print(
-                    f"🔍 Analyzing file using Attachments library: {args.analyze_file}"
-                )
-            results = analyze_file(args.analyze_file, args.model)
-
-        elif args.file:
-            # Traditional text file reading
-            article_text = read_file(args.file)
-            if not args.quiet:
-                print(f"📄 Loaded article from: {args.file}")
-                print(f"📝 Article length: {len(article_text)} characters")
-                print(f"🤖 Using model: {args.model}")
-
-            # Validate article text
-            if not article_text or len(article_text.strip()) < 50:
-                print("❌ Error: Article text is too short (minimum 50 characters)")
-                sys.exit(1)
-
-            # Score the article text
-            results = score_article(article_text, LinkedInArticleScorer())
-
-        else:
-            # Direct text input
-            article_text = args.article_text
-
-            # Validate article text
-            if not article_text or len(article_text.strip()) < 50:
-                print("❌ Error: Article text is too short (minimum 50 characters)")
-                sys.exit(1)
-
-            if not args.quiet:
-                print(f"📝 Article length: {len(article_text)} characters")
-                print(f"🤖 Using model: {args.model}")
-
-            # Score the article text
-            results = score_article(article_text, LinkedInArticleScorer())
-
-        # Print results
-        print_score_report(results)
-
-        # Exit with appropriate code based on score
-        if results.percentage >= 72:
-            sys.exit(0)  # Success for strong articles
-        elif results.percentage >= 56:
-            sys.exit(1)  # Warning for articles needing work
-        else:
-            sys.exit(2)  # Error for articles needing major rework
-
-    except KeyboardInterrupt:
-        print("\n❌ Analysis interrupted by user")
-        sys.exit(130)
-    except Exception as e:
-        print(f"❌ Error during analysis: {e}")
-        sys.exit(1)
-
-
 if __name__ == "__main__":
-    main()
+    print("used as part of a module")

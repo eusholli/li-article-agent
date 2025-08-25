@@ -7,7 +7,37 @@
 **Target:** Simplified model selection with dedicated arguments for each component  
 **Timeline:** Current session enhancement completed with improved user experience
 
-### Latest Enhancement: Runtime Model Selection System
+### Latest Enhancement: Context Window Management System ✅ NEW
+
+#### 1. Centralized Context Window Management
+- **ContextWindowManager Class:** Unified context window management for all components
+- **Fixed Allocation Strategy:** 25% output, 15% instructions, 35% RAG context, 25% safety margin
+- **Character-Based Estimation:** 4 chars ≈ 1 token conversion for consistent calculations
+- **ContextWindowBudget Dataclass:** Structured allocation tracking with token and character equivalents
+- **ContextWindowError Exception:** Clear error handling when content exceeds limits
+
+#### 2. Component Integration
+- **LinkedInArticleGenerator:** Context validation before DSPy signature calls (generator/improver)
+- **TavilyRetriever (RAG):** Replaced auto-sizing logic with centralized 35% allocation
+- **HTMLTextCleaner:** Uses centralized passage limits for DSPy processing constraints
+- **LinkedInArticleScorer:** Context validation before scoring operations
+- **Comprehensive Validation:** All components validate content fits within context window budget
+
+#### 3. Smart Error Handling and Monitoring
+- **Proactive Validation:** Content validation before expensive DSPy operations
+- **Graceful Fallbacks:** Automatic context reduction when limits exceeded
+- **Usage Warnings:** Alerts when approaching 80% of available context space
+- **Detailed Error Messages:** Clear breakdown of content parts exceeding limits
+- **Budget Summaries:** Comprehensive allocation reporting for debugging
+
+#### 4. Technical Implementation
+- **Fixed Percentage Allocations:** Consistent 25%/15%/35%/25% split across all models
+- **Model-Agnostic Design:** Works with any DSPy model configuration
+- **Integration with DspyModelConfig:** Seamless integration with existing factory pattern
+- **Comprehensive Test Suite:** 20+ unit and integration tests covering all scenarios
+- **Real-World Validation:** Tested with various model sizes (4K to 1M+ token contexts)
+
+### Previous Enhancement: Runtime Model Selection System ✅
 
 #### 1. Enhanced Factory Pattern
 - **Model Instance Management:** New `get_model_instance()` and `create_component_lm()` functions in dspy_factory.py

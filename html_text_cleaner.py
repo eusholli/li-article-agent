@@ -12,6 +12,7 @@ import logging
 from typing import Dict, List, Tuple, Optional, Union
 from html import unescape
 import dspy
+from dspy import Prediction
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager
 
@@ -33,7 +34,7 @@ class CitationWorthyFilter(dspy.Module):
         self.filter = dspy.Predict(CitationFilter)
         self.models = models
 
-    def forward(self, passages: List[str]) -> List[str]:
+    def forward(self, passages: List[str]) -> dspy.Prediction:
         """
         Filter passages individually to extract only citation-worthy sentences.
         Processes each passage separately to avoid context window overflow.
@@ -42,10 +43,10 @@ class CitationWorthyFilter(dspy.Module):
             passages: List of cleaned text passages
 
         Returns:
-            List of passages containing only citation-worthy sentences
+            dspy.Prediction containing filtered passages
         """
         if not passages:
-            return []
+            return dspy.Prediction(passages=[])
 
         filtered_passages = []
         logger = logging.getLogger(__name__)
@@ -81,7 +82,7 @@ class CitationWorthyFilter(dspy.Module):
         print(
             f"🎯 Citation filtering completed: {len(filtered_passages)} passages processed"
         )
-        return filtered_passages
+        return dspy.Prediction(passages=filtered_passages)
 
 
 class HTMLTextCleaner:
@@ -546,7 +547,8 @@ class HTMLTextCleaner:
             print(
                 f"🎯 Applying citation filtering to {len(preprocessed_passages)} passages..."
             )
-            citation_passages = self.citation_filter(preprocessed_passages)
+            filter_result = self.citation_filter(preprocessed_passages)
+            citation_passages = filter_result.passages
 
             # Check if citation filtering helped reduce size
             citation_total = sum(len(p) for p in citation_passages)

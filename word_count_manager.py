@@ -305,7 +305,7 @@ class WordCountManager:
         else:
             prompt_parts.append("✅ WORD COUNT OPTIMAL")
             prompt_parts.append(
-                "Focus on quality improvements without major length changes"
+                "Focus on the wanted document length while maintaining the wanted document quality"
             )
 
         prompt_parts.append("")

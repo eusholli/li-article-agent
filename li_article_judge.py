@@ -616,8 +616,12 @@ class LinkedInArticleScorer(dspy.Module):
         self.criterion_scorer = dspy.ChainOfThought(ArticleCriterionScorer)
         self.feedback_generator = dspy.ChainOfThought(OverallFeedbackGenerator)
 
-    def forward(self, article_text: str) -> ArticleScoreModel:
-        """Score an article across all criteria and generate comprehensive feedback."""
+    def forward(self, article_text: str) -> dspy.Prediction:
+        """Score an article across all criteria and generate comprehensive feedback.
+
+        Returns:
+            dspy.Prediction object containing ArticleScoreModel as output field
+        """
 
         category_scores = {}
         total_score = 0
@@ -729,7 +733,7 @@ class LinkedInArticleScorer(dspy.Module):
         # Calculate word count for the article
         word_count = len(article_text.split()) if article_text else 0
 
-        return ArticleScoreModel(
+        score_model = ArticleScoreModel(
             total_score=total_score,
             max_score=max_score,
             percentage=percentage,
@@ -738,6 +742,8 @@ class LinkedInArticleScorer(dspy.Module):
             performance_tier=tier,
             word_count=word_count,
         )
+
+        return dspy.Prediction(output=score_model)
 
 
 class FastLinkedInArticleScorer(dspy.Module):
@@ -910,7 +916,7 @@ class FastLinkedInArticleScorer(dspy.Module):
 
         return result
 
-    def forward(self, article_text: str) -> ArticleScoreModel:
+    def forward(self, article_text: str) -> dspy.Prediction:
         """
         Score an article using the fast single-call approach.
 
@@ -918,7 +924,7 @@ class FastLinkedInArticleScorer(dspy.Module):
             article_text: The article text to score
 
         Returns:
-            ArticleScoreModel compatible with existing interfaces
+            dspy.Prediction object containing ArticleScoreModel as output field
         """
         print(
             "🚀 Fast scoring: Analyzing article with single comprehensive evaluation..."
@@ -944,7 +950,7 @@ class FastLinkedInArticleScorer(dspy.Module):
                 f"✅ Fast scoring complete: {legacy_result.total_score}/{legacy_result.max_score} ({legacy_result.percentage:.1f}%)"
             )
 
-            return legacy_result
+            return dspy.Prediction(output=legacy_result)
 
         except Exception as e:
             print(f"⚠️ Fast scoring failed, falling back to original method: {str(e)}")
@@ -952,7 +958,8 @@ class FastLinkedInArticleScorer(dspy.Module):
 
             # Fallback to original scorer if fast scoring fails
             original_scorer = LinkedInArticleScorer(self.models)
-            return original_scorer(article_text)
+            result = original_scorer(article_text)
+            return dspy.Prediction(output=result.output)
 
 
 # ==========================================================================

@@ -33,7 +33,9 @@ class ArticleVersion:
     version: int
     content: str
     word_count: int
-    score_results: Optional[ArticleScoreModel] = None
+    score_results: Optional[ArticleScoreModel] = (
+        None  # Will come from prediction.output
+    )
     improvement_feedback: str = ""
     timestamp: float = 0.0
 
@@ -322,6 +324,16 @@ class LinkedInArticleGenerator:
         """Run the iterative improvement process with combined quality and length validation."""
         current_article = initial_article
         iteration = 0
+        # generate default score_results to avoid reference before assignment
+        score_results = ArticleScoreModel(
+            total_score=0,
+            percentage=0.0,
+            word_count=0,
+            overall_feedback="",
+            performance_tier="",
+            category_scores={},
+            max_score=0,
+        )
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -330,8 +342,30 @@ class LinkedInArticleGenerator:
                 print(f"\n🔄 Iteration {iteration}: Scoring and Analysis")
                 print("-" * 40)
 
-            # Score current article
-            score_results = self.judge(current_article)
+            # Score current article (returns DSPy Prediction)
+            prediction = self.judge(current_article)
+            score_results = prediction.output
+
+            # if verbose then print score result details and the recommended improvements
+            # and the current word count and length status
+            if verbose:
+                print(
+                    f"📊 Current Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({score_results.percentage:.1f}%)"
+                )
+                current_word_count = (
+                    score_results.word_count
+                    or self.word_count_manager.count_words(current_article)
+                )
+                print(f"📝 Current Word Count: {current_word_count} words")
+                print(f"🎯 Target Score: ≥{self.target_score_percentage}%")
+                print(
+                    f"📏 Target Word Count: {self.word_count_manager.target_min}-{self.word_count_manager.target_max}"
+                )
+                print("🔍 Improvement Suggestions:")
+                for category, results in score_results.category_scores.items():
+                    for r in results:
+                        if hasattr(r, "suggestions") and r.suggestions:
+                            print(f"  [{category}] {r.suggestions}")
 
             # Update current version with score
             if self.versions:
@@ -427,7 +461,8 @@ class LinkedInArticleGenerator:
             current_article = improved_article
 
         # Final scoring
-        final_score_results = self.judge.forward(current_article)
+        # prediction = self.judge.forward(current_article)
+        final_score_results = score_results
         final_word_count = (
             final_score_results.word_count
             or self.word_count_manager.count_words(current_article)

@@ -152,8 +152,7 @@ class TavilyRetriever(dspy.Retrieve):
                     if raw_content and url:  # Only add if both content and URL exist
                         raw_passages.append(raw_content)
                         raw_urls.append(url)
-                        print(f"- {url[:100]}...")
-                        print(f"Content length - {len(raw_content)} characters")
+                        print(f"- {url[:100]}... {len(raw_content)} chars")
 
         print(f"📥 Collected {len(raw_passages)} raw passages")
 

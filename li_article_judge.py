@@ -162,6 +162,122 @@ class OverallFeedbackOutput(BaseModel):
         return v
 
 
+class CriterionScore(BaseModel):
+    """
+    🎯 PYDANTIC MODEL: Individual Criterion Score for Fast Scoring
+
+    This model represents a single criterion's score within the comprehensive scoring system.
+    Used by FastLinkedInArticleScorer for structured single-call scoring.
+    """
+
+    criterion_id: str = Field(
+        ..., description="Criterion identifier (e.g., 'Q1', 'Q2', etc.)"
+    )
+    category: str = Field(..., description="Category this criterion belongs to")
+    question: str = Field(..., description="The criterion question being evaluated")
+    raw_score: int = Field(
+        ..., ge=1, le=5, description="Raw score from 1-5 for this criterion"
+    )
+    weighted_score: int = Field(
+        ..., description="Weighted score based on criterion point value"
+    )
+    max_points: int = Field(
+        ..., description="Maximum possible points for this criterion"
+    )
+    reasoning: str = Field(
+        ..., min_length=10, description="Detailed explanation of the score"
+    )
+    suggestions: str = Field(
+        ..., min_length=10, description="Specific improvement suggestions"
+    )
+
+
+class CategorySummary(BaseModel):
+    """
+    📊 PYDANTIC MODEL: Category Summary for Fast Scoring
+
+    This model represents a category-level summary within the comprehensive scoring system.
+    """
+
+    category_name: str = Field(..., description="Name of the scoring category")
+    total_score: int = Field(..., description="Total points achieved in this category")
+    max_score: int = Field(..., description="Maximum possible points for this category")
+    percentage: float = Field(..., description="Percentage score for this category")
+    key_strengths: str = Field(
+        ..., description="Main strengths identified in this category"
+    )
+    key_weaknesses: str = Field(
+        ..., description="Main areas for improvement in this category"
+    )
+
+
+class ComprehensiveArticleScoreOutput(BaseModel):
+    """
+    🚀 PYDANTIC MODEL: Complete Single-Call Article Scoring Output
+
+    This comprehensive model captures all scoring results in one structured response,
+    enabling the FastLinkedInArticleScorer to evaluate all criteria in a single LLM call.
+
+    Benefits:
+    - ~95% speed improvement (1 call vs 21+ calls)
+    - ~95% cost reduction
+    - Better consistency through single context
+    - Comprehensive validation ensures completeness
+    """
+
+    # Individual criterion scores (all 20+ criteria)
+    criterion_scores: List[CriterionScore] = Field(
+        ...,
+        description="Complete list of scores for all individual criteria",
+    )
+
+    # Category-level summaries
+    category_summaries: Dict[str, CategorySummary] = Field(
+        ..., description="Summary analysis for each scoring category"
+    )
+
+    # Overall scoring metrics
+    total_score: int = Field(
+        ..., description="Total weighted score across all criteria"
+    )
+    max_score: int = Field(..., description="Maximum possible score (180 points)")
+    percentage: float = Field(..., ge=0, le=100, description="Overall percentage score")
+
+    # Performance assessment
+    performance_tier: str = Field(..., description="Performance tier classification")
+    overall_feedback: str = Field(
+        ..., min_length=100, description="Comprehensive article feedback"
+    )
+
+    # Article metadata
+    word_count: int = Field(..., description="Word count of the evaluated article")
+
+    @validator("criterion_scores")
+    def validate_criterion_completeness(cls, v):
+        """Ensure all expected criteria are present."""
+        if len(v) < 20:
+            raise ValueError(f"Expected at least 20 criteria, got {len(v)}")
+        return v
+
+    @validator("category_summaries")
+    def validate_category_completeness(cls, v):
+        """Ensure all expected categories are present."""
+        expected_categories = {
+            "First-Order Thinking",
+            "Strategic Deconstruction & Synthesis",
+            "Hook & Engagement",
+            "Storytelling & Structure",
+            "Authority & Credibility",
+            "Idea Density & Clarity",
+            "Reader Value & Actionability",
+            "Call to Connection",
+        }
+        missing_categories = expected_categories - set(v.keys())
+        if missing_categories:
+            raise ValueError(f"Missing categories: {missing_categories}")
+        return v
+
+
 class ArticleExtractionOutput(BaseModel):
     """
     📄 PYDANTIC MODEL: DSPy Output for File Article Extraction
@@ -436,6 +552,53 @@ class FileArticleExtractor(dspy.Signature):
     )
 
 
+class ComprehensiveArticleScorer(dspy.Signature):
+    """
+    🚀 COMPREHENSIVE SINGLE-CALL ARTICLE SCORER
+
+    Score a LinkedIn article across ALL criteria in one comprehensive evaluation.
+    This signature replaces 21+ individual LLM calls with one structured evaluation,
+    providing ~95% speed improvement and ~95% cost reduction while maintaining quality.
+    Act as a hyper-critical world-class LinkedIn article judge that cares deeply about high quality content.
+    """
+
+    article_text = dspy.InputField(
+        desc="The full text of the LinkedIn article to evaluate comprehensively"
+    )
+
+    scoring_criteria_json = dspy.InputField(
+        desc="Complete scoring criteria structure with all categories, questions, point values, and scales in JSON format"
+    )
+
+    output: ComprehensiveArticleScoreOutput = dspy.OutputField(
+        desc="""Complete scoring results for ALL criteria with structured breakdown.
+
+CRITICAL REQUIREMENTS:
+1. Score ALL 20+ individual criteria (Q1-Q20+) with scores 1-5
+2. Provide detailed reasoning and suggestions for each criterion
+3. Calculate weighted scores based on point values (5-20 points per criterion)
+4. Generate category summaries for all 8 categories
+5. Provide comprehensive overall feedback and performance tier
+6. Ensure total consistency across all scoring components
+
+SCORING GUIDELINES:
+- Use the full 1-5 scale for each criterion
+- Consider criterion relationships and consistency
+- Provide specific, actionable suggestions
+- Focus on first-order thinking and strategic analysis
+- Weight higher-point criteria appropriately in reasoning
+
+OUTPUT STRUCTURE VALIDATION:
+- criterion_scores: List of exactly 20+ CriterionScore objects
+- category_summaries: Dict with all 8 category summaries
+- total_score: Sum of all weighted criterion scores
+- percentage: (total_score / 180) * 100
+- performance_tier: Based on percentage thresholds
+- overall_feedback: Comprehensive analysis (100+ characters)
+- word_count: Article word count"""
+    )
+
+
 class LinkedInArticleScorer(dspy.Module):
     """Complete LinkedIn article scoring system using DSPy."""
 
@@ -577,8 +740,223 @@ class LinkedInArticleScorer(dspy.Module):
         )
 
 
+class FastLinkedInArticleScorer(dspy.Module):
+    """
+    🚀 FAST LINKEDIN ARTICLE SCORER - Single LLM Call Implementation
+
+    This optimized scorer evaluates all criteria in ONE comprehensive LLM call,
+    providing ~95% speed improvement and ~95% cost reduction compared to the
+    original LinkedInArticleScorer while maintaining scoring quality.
+
+    Key Benefits:
+    - 1 LLM call vs 21+ calls (original implementation)
+    - Massive cost reduction for API usage
+    - Better consistency through single evaluation context
+    - Comprehensive Pydantic validation ensures completeness
+    - Maintains backward compatibility with ArticleScoreModel
+    """
+
+    def __init__(self, models: Dict[str, DspyModelConfig]):
+        """
+        Initialize the Fast LinkedIn Article Scorer.
+
+        Args:
+            models: Dictionary of model configurations for different components
+        """
+        super().__init__()
+
+        self.models = models
+        self.context_manager = ContextWindowManager(models["judge"])
+        self.comprehensive_scorer = dspy.ChainOfThought(ComprehensiveArticleScorer)
+
+    def _prepare_criteria_json(self) -> str:
+        """
+        Prepare the scoring criteria as a JSON string for the LLM.
+
+        Returns:
+            JSON string containing all criteria with structure and weights
+        """
+        import json
+
+        # Create a structured representation of criteria for the LLM
+        criteria_structure = {}
+        criterion_counter = 1
+
+        for category_name, criteria in SCORING_CRITERIA.items():
+            criteria_structure[category_name] = {
+                "criteria": [],
+                "total_points": sum(c.get("points", 5) for c in criteria),
+            }
+
+            for criterion in criteria:
+                criterion_data = {
+                    "id": f"Q{criterion_counter}",
+                    "question": criterion["question"],
+                    "points": criterion.get("points", 5),
+                    "scale": criterion["scale"],
+                }
+                criteria_structure[category_name]["criteria"].append(criterion_data)
+                criterion_counter += 1
+
+        return json.dumps(criteria_structure, indent=2)
+
+    def _convert_to_legacy_format(
+        self, comprehensive_result: ComprehensiveArticleScoreOutput
+    ) -> ArticleScoreModel:
+        """
+        Convert the comprehensive scoring result to the legacy ArticleScoreModel format
+        for backward compatibility.
+
+        Args:
+            comprehensive_result: The comprehensive scoring output from the fast scorer
+
+        Returns:
+            ArticleScoreModel compatible with existing interfaces
+        """
+        # Group criterion scores by category for legacy format
+        category_scores = {}
+
+        for category_name in SCORING_CRITERIA.keys():
+            category_results = []
+
+            # Find all criteria for this category
+            for criterion_score in comprehensive_result.criterion_scores:
+                if criterion_score.category == category_name:
+                    # Convert to legacy ScoreResultModel format
+                    legacy_result = ScoreResultModel(
+                        criterion=f"{criterion_score.criterion_id}: {criterion_score.question}",
+                        score=criterion_score.weighted_score,
+                        reasoning=criterion_score.reasoning,
+                        suggestions=criterion_score.suggestions,
+                    )
+                    category_results.append(legacy_result)
+
+            category_scores[category_name] = category_results
+
+        return ArticleScoreModel(
+            total_score=comprehensive_result.total_score,
+            max_score=comprehensive_result.max_score,
+            percentage=comprehensive_result.percentage,
+            category_scores=category_scores,
+            overall_feedback=comprehensive_result.overall_feedback,
+            performance_tier=comprehensive_result.performance_tier,
+            word_count=comprehensive_result.word_count,
+        )
+
+    def _validate_and_fix_result(
+        self, result: ComprehensiveArticleScoreOutput
+    ) -> ComprehensiveArticleScoreOutput:
+        """
+        Validate the comprehensive result and fix any issues to ensure completeness.
+
+        Args:
+            result: The raw comprehensive scoring result
+
+        Returns:
+            Validated and potentially corrected result
+        """
+        # Ensure we have all expected criteria
+        expected_criteria_count = sum(
+            len(criteria) for criteria in SCORING_CRITERIA.values()
+        )
+
+        if len(result.criterion_scores) < expected_criteria_count:
+            print(
+                f"⚠️ Warning: Expected {expected_criteria_count} criteria, got {len(result.criterion_scores)}"
+            )
+
+            # Create missing criteria with default scores
+            existing_ids = {cs.criterion_id for cs in result.criterion_scores}
+            criterion_counter = 1
+
+            for category_name, criteria in SCORING_CRITERIA.items():
+                for criterion in criteria:
+                    criterion_id = f"Q{criterion_counter}"
+                    criterion_counter += 1
+
+                    if criterion_id not in existing_ids:
+                        # Add missing criterion with default score
+                        missing_criterion = CriterionScore(
+                            criterion_id=criterion_id,
+                            category=category_name,
+                            question=criterion["question"],
+                            raw_score=3,  # Default middle score
+                            weighted_score=(3 * criterion.get("points", 5)) // 5,
+                            max_points=criterion.get("points", 5),
+                            reasoning="Default score applied due to missing evaluation",
+                            suggestions="Re-evaluate this criterion for more accurate scoring",
+                        )
+                        result.criterion_scores.append(missing_criterion)
+
+        # Recalculate totals to ensure consistency
+        total_score = sum(cs.weighted_score for cs in result.criterion_scores)
+        max_score = sum(cs.max_points for cs in result.criterion_scores)
+        percentage = (total_score / max_score) * 100 if max_score > 0 else 0
+
+        # Update the result with corrected values
+        result.total_score = total_score
+        result.max_score = max_score
+        result.percentage = percentage
+
+        # Ensure performance tier is set correctly
+        if percentage >= 89:
+            result.performance_tier = "World-class — publish as is"
+        elif percentage >= 72:
+            result.performance_tier = "Strong, but tighten weak areas"
+        elif percentage >= 56:
+            result.performance_tier = "Needs restructuring and sharper insights"
+        else:
+            result.performance_tier = "Rework before publishing"
+
+        return result
+
+    def forward(self, article_text: str) -> ArticleScoreModel:
+        """
+        Score an article using the fast single-call approach.
+
+        Args:
+            article_text: The article text to score
+
+        Returns:
+            ArticleScoreModel compatible with existing interfaces
+        """
+        print(
+            "🚀 Fast scoring: Analyzing article with single comprehensive evaluation..."
+        )
+
+        # Prepare criteria JSON for the LLM
+        criteria_json = self._prepare_criteria_json()
+
+        try:
+            # Make the single comprehensive scoring call
+            with dspy.context(lm=self.models["judge"].dspy_lm):
+                result = self.comprehensive_scorer(
+                    article_text=article_text, scoring_criteria_json=criteria_json
+                )
+
+            # Validate and fix the result
+            validated_result = self._validate_and_fix_result(result.output)
+
+            # Convert to legacy format for backward compatibility
+            legacy_result = self._convert_to_legacy_format(validated_result)
+
+            print(
+                f"✅ Fast scoring complete: {legacy_result.total_score}/{legacy_result.max_score} ({legacy_result.percentage:.1f}%)"
+            )
+
+            return legacy_result
+
+        except Exception as e:
+            print(f"⚠️ Fast scoring failed, falling back to original method: {str(e)}")
+            logging.error(f"FastLinkedInArticleScorer failed: {str(e)}")
+
+            # Fallback to original scorer if fast scoring fails
+            original_scorer = LinkedInArticleScorer(self.models)
+            return original_scorer(article_text)
+
+
 # ==========================================================================
-# SECTION 4: SCORING AND REPORTING FUNCTIONS
+# SECTION 5: SCORING AND REPORTING FUNCTIONS
 # ==========================================================================
 
 

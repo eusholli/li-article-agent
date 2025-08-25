@@ -14,7 +14,11 @@ import time
 import re
 import asyncio
 
-from li_article_judge import LinkedInArticleScorer, ArticleScoreModel
+from li_article_judge import (
+    LinkedInArticleScorer,
+    FastLinkedInArticleScorer,
+    ArticleScoreModel,
+)
 from criteria_extractor import CriteriaExtractor
 from word_count_manager import WordCountManager
 from rag import TavilyRetriever
@@ -178,7 +182,9 @@ class LinkedInArticleGenerator:
         self.rag = TavilyRetriever(
             models=models, k=10
         )  # Use TavilyRetriever for web search
-        self.judge = LinkedInArticleScorer(models=models)
+
+        # self.judge = LinkedInArticleScorer(models=models)
+        self.judge = FastLinkedInArticleScorer(models=models)
         self.criteria_extractor = CriteriaExtractor()
         self.word_count_manager = WordCountManager(word_count_min, word_count_max)
 
@@ -325,7 +331,7 @@ class LinkedInArticleGenerator:
                 print("-" * 40)
 
             # Score current article
-            score_results = self.judge.forward(current_article)
+            score_results = self.judge(current_article)
 
             # Update current version with score
             if self.versions:

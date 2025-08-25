@@ -60,12 +60,13 @@ class ArticleGenerationSignature(dspy.Signature):
         - Use **bold** and *italic* emphasis for key points
         - Professional paragraph structure with engaging subheadings
 
-        CITATION CONTROL:
-        - ONLY use citations that appear in the provided RAG context
-        - Copy citation format exactly: [text](url)
-        - DO NOT create new external references or links
-        - Present uncited content as your own analysis/opinion
-        - Maintain clear distinction between cited facts and personal insights
+        CITATION CREATION:
+        - When using information from the context dictionary, create citations by extracting specific claims and linking them to their source URLs
+        - Format citations as [specific claim or data point](source_url)
+        - Example: If context contains "https://example.com": "Company revenue was $50 billion", write: "Company revenue was [$50 billion](https://example.com)"
+        - ONLY cite information that directly appears in the provided context dictionary
+        - Present analysis, opinions, and synthesis as uncited content
+        - Aim for 3-8 citations per article to support key factual claims
 
         CONTENT REQUIREMENTS:
         - Expand the draft/outline into a comprehensive LinkedIn article
@@ -108,12 +109,13 @@ class ArticleImprovementSignature(dspy.Signature):
         - Use **bold** and *italic* emphasis for key points
         - Professional paragraph structure with engaging subheadings
 
-        CITATION CONTROL:
-        - ONLY use citations that appear in the provided RAG context
-        - Copy citation format exactly: [text](url)
-        - DO NOT create new external references or links
-        - Present uncited content as your own analysis/opinion
-        - Maintain clear distinction between cited facts and personal insights
+        CITATION CREATION:
+        - When using information from the context dictionary, create citations by extracting specific claims and linking them to their source URLs
+        - Format citations as [specific claim or data point](source_url)
+        - Example: If context contains "https://example.com": "Company revenue was $50 billion", write: "Company revenue was [$50 billion](https://example.com)"
+        - ONLY cite information that directly appears in the provided context dictionary
+        - Present analysis, opinions, and synthesis as uncited content
+        - Aim for 3-8 citations per article to support key factual claims
 
         CONTENT REQUIREMENTS:
         - Address the scoring feedback while maintaining original draft key points
@@ -323,7 +325,7 @@ class LinkedInArticleGenerator:
                 print("-" * 40)
 
             # Score current article
-            score_results = self.judge(current_article)
+            score_results = self.judge.forward(current_article)
 
             # Update current version with score
             if self.versions:
@@ -419,7 +421,7 @@ class LinkedInArticleGenerator:
             current_article = improved_article
 
         # Final scoring
-        final_score_results = self.judge(current_article)
+        final_score_results = self.judge.forward(current_article)
         final_word_count = (
             final_score_results.word_count
             or self.word_count_manager.count_words(current_article)

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, validator
 from attachments.dspy import Attachments
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
+import logging
 
 
 # ==========================================================================
@@ -481,52 +482,27 @@ class LinkedInArticleScorer(dspy.Module):
                     [f"{score}: {desc}" for score, desc in criterion["scale"].items()]
                 )
 
-                # Get score for this criterion with retry logic
-                result = None
-                max_retries = 3
-
-                for attempt in range(max_retries):
-                    try:
-                        with dspy.context(lm=self.models["judge"].dspy_lm):
-                            result = self.criterion_scorer(
-                                article_text=article_text,
-                                criterion_question=criterion["question"],
-                                scale_description=scale_desc,
-                            )
-
-                        # dspy.inspect_history(1)  # Inspect history for debugging
-
-                        # With Pydantic validation, we can trust the structure
-                        if result and hasattr(result, "output"):
-                            break  # Success, exit retry loop
-                        else:
-                            print(
-                                f"⚠️ Attempt {attempt + 1}: Invalid output format, retrying..."
-                            )
-                            if attempt == max_retries - 1:
-                                # Last attempt failed, create fallback
-                                result = None
-                    except Exception as e:
-                        print(
-                            f"⚠️ Attempt {attempt + 1}: Scoring failed ({str(e)}), retrying..."
+                try:
+                    with dspy.context(lm=self.models["judge"].dspy_lm):
+                        result = self.criterion_scorer(
+                            article_text=article_text,
+                            criterion_question=criterion["question"],
+                            scale_description=scale_desc,
                         )
-                        if attempt == max_retries - 1:
-                            # Last attempt failed, create fallback
-                            result = None
-
-                # Handle fallback if all retries failed
-                if result is None or not hasattr(result, "output"):
-                    print(
-                        f"⚠️ All retries failed for {criterion_id}, using fallback response"
+                except Exception as e:
+                    error_string = (
+                        f"⚠️ Scoring '{criterion["question"]}' failed ({str(e)})"
                     )
+                    print(error_string)
+                    logging.error(error_string)
 
                     # Create a fallback result with Pydantic structure
                     class FallbackResult:
                         def __init__(self):
                             self.output = CriterionScoringOutput(
-                                score=3,  # Default middle score
+                                score=0,  # Default zero score
                                 reasoning=f"Unable to analyze this criterion due to response format issues. Criterion: {criterion['question'][:100]}...",
-                                suggestions="Please review this criterion manually for more specific feedback.",
+                                suggestions="Try scoring criterion again.",
                             )
 
                     result = FallbackResult()

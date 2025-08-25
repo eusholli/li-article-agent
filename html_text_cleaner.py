@@ -63,7 +63,7 @@ class CitationWorthyFilter(dspy.Module):
                     filtered_passages.append(result.quality_sentences)
                     print(f"  ✅ Passage {i+1}: Passage filtered successfully")
                     print(
-                        f"    📄 Filtered content(len:{len(result.quality_sentences)}): {result.quality_sentences[:400]}..."
+                        f"    📄 Filtered content(len:{len(result.quality_sentences)})"
                     )
                 else:
                     # If no citation-worthy content found, keep original

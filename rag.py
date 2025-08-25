@@ -51,7 +51,7 @@ class TopicExtractionResult(BaseModel):
     )
     search_query: List[str] = Field(
         ...,
-        description="A list of at most 5 optimized search queries to find relevant context for the topic",
+        description="A list of at most 3 optimized search queries to find relevant context for the topic",
     )
     needs_research: bool = Field(
         ...,
@@ -128,7 +128,6 @@ class TavilyRetriever(dspy.Retrieve):
         for response in responses:
             for result in response.get("results", []):
                 print(f"- {result.get('url', '')[:200]}...")
-                print(f"- {result.get('content', '')[:200]}...")
 
                 if result.get("score", 0) > 0.5:
                     relevant_urls.append(result.get("url"))
@@ -142,10 +141,10 @@ class TavilyRetriever(dspy.Retrieve):
         raw_passages = []
         raw_urls = []
 
+        print(f"RAG results for {queries}:")
         for data in extracted_data:
             results = data.get("results", [])
             if results:
-                print(f"RAG results for {query}:")
                 for result in results:
                     raw_content = result.get("raw_content", "")
                     url = result.get("url", "")
@@ -154,7 +153,6 @@ class TavilyRetriever(dspy.Retrieve):
                         raw_passages.append(raw_content)
                         raw_urls.append(url)
                         print(f"- {url[:100]}...")
-                        print(f"- {raw_content[:100]}...")
                         print(f"Content length - {len(raw_content)} characters")
 
         print(f"📥 Collected {len(raw_passages)} raw passages")

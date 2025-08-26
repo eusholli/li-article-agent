@@ -205,6 +205,21 @@ class ContextWindowManager:
         """Convert character count to estimated token count."""
         return char_count // self.CHARS_PER_TOKEN
 
+    def chars_to_tokens(self, char_count: int) -> int:
+        """
+        Convert character count to estimated token count using the model's character-to-token ratio.
+
+        This is a helper function that provides a simple way to estimate how many tokens
+        a text of a given length might use. Uses the standard ratio of 4 characters per token.
+
+        Args:
+            char_count: Number of characters to convert to tokens
+
+        Returns:
+            Estimated number of tokens
+        """
+        return self.estimate_tokens_from_chars(char_count)
+
     def _format_content_breakdown(self, content_parts: Dict[str, str]) -> str:
         """Format content breakdown for error messages."""
         breakdown_parts = []

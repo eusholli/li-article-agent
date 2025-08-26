@@ -21,9 +21,9 @@ from li_article_judge import (
 )
 from criteria_extractor import CriteriaExtractor
 from word_count_manager import WordCountManager
-from rag import TavilyRetriever
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
+from rag_fast import retrieve_and_pack
 
 
 @dataclass
@@ -51,8 +51,8 @@ class ArticleGenerationSignature(dspy.Signature):
         desc="Original draft to expand on key points if necessary",
     )
     context = dspy.InputField(
-        desc="Dictionary mapping URLs to their text content for citation selection. Key: URL, Value: relevant text content",
-        default={},
+        desc="String containing relevant content with inline markdown citations already formatted. Citations appear as [specific claim or data point](source_url) within the text.",
+        default="",
     )
     scoring_criteria = dspy.InputField(desc="Complete scoring criteria for reference")
     word_count_guidance = dspy.InputField(desc="Word count optimization guidance")
@@ -67,12 +67,12 @@ class ArticleGenerationSignature(dspy.Signature):
         - Professional paragraph structure with engaging subheadings
 
         CITATION CREATION:
-        - When using information from the context dictionary, create citations by extracting specific claims and linking them to their source URLs
-        - Format citations as [specific claim or data point](source_url)
-        - Example: If context contains "https://example.com": "Company revenue was $50 billion", write: "Company revenue was [$50 billion](https://example.com)"
-        - ONLY cite information that directly appears in the provided context dictionary
+        - The context string already contains properly formatted inline citations as [specific claim or data point](source_url)
+        - Use these pre-formatted citations directly when incorporating relevant information from the context
+        - Example: If context contains "Company revenue was [$50 billion](https://example.com)", use this exact citation format
+        - ONLY cite information that directly appears in the provided context string with its existing citations
         - Present analysis, opinions, and synthesis as uncited content
-        - Aim for 3-8 citations per article to support key factual claims
+        - Aim for 3-8 citations per article by utilizing the pre-formatted citations from the context
 
         CONTENT REQUIREMENTS:
         - Expand the draft/outline into a comprehensive LinkedIn article
@@ -96,8 +96,8 @@ class ArticleImprovementSignature(dspy.Signature):
         desc="Original draft for reference to maintain key points"
     )
     context = dspy.InputField(
-        desc="Dictionary mapping URLs to their text content for citation selection. Key: URL, Value: relevant text content",
-        default={},
+        desc="String containing relevant content with inline markdown citations already formatted. Citations appear as [specific claim or data point](source_url) within the text.",
+        default="",
     )
     score_feedback = dspy.InputField(
         desc="Detailed scoring feedback and improvement suggestions"
@@ -116,12 +116,12 @@ class ArticleImprovementSignature(dspy.Signature):
         - Professional paragraph structure with engaging subheadings
 
         CITATION CREATION:
-        - When using information from the context dictionary, create citations by extracting specific claims and linking them to their source URLs
-        - Format citations as [specific claim or data point](source_url)
-        - Example: If context contains "https://example.com": "Company revenue was $50 billion", write: "Company revenue was [$50 billion](https://example.com)"
-        - ONLY cite information that directly appears in the provided context dictionary
+        - The context string already contains properly formatted inline citations as [specific claim or data point](source_url)
+        - Use these pre-formatted citations directly when incorporating relevant information from the context
+        - Example: If context contains "Company revenue was [$50 billion](https://example.com)", use this exact citation format
+        - ONLY cite information that directly appears in the provided context string with its existing citations
         - Present analysis, opinions, and synthesis as uncited content
-        - Aim for 3-8 citations per article to support key factual claims
+        - Aim for 3-8 citations per article by utilizing the pre-formatted citations from the context
 
         CONTENT REQUIREMENTS:
         - Address the scoring feedback while maintaining original draft key points
@@ -180,11 +180,6 @@ class LinkedInArticleGenerator:
         # Initialize context window manager
         self.context_manager = ContextWindowManager(models["generator"])
 
-        # Initialize components with optional model specifications
-        self.rag = TavilyRetriever(
-            models=models, k=10
-        )  # Use TavilyRetriever for web search
-
         # self.judge = LinkedInArticleScorer(models=models)
         self.judge = FastLinkedInArticleScorer(models=models)
         self.criteria_extractor = CriteriaExtractor()
@@ -199,52 +194,38 @@ class LinkedInArticleGenerator:
         self.versions: List[ArticleVersion] = []
         self.generation_log: List[str] = []
         self.original_draft: Optional[str] = None
-        self.search_context: Dict[str, str] = {}
 
-    async def _perform_rag_search(
-        self, draft_text: str, verbose: bool = True
-    ) -> Dict[str, str]:
+    def _perform_rag_search(self, draft_text: str, verbose: bool = True) -> str:
         """
-        Perform comprehensive RAG search and return URL-to-content mapping.
+        Perform comprehensive RAG search and return context with inline citations.
 
         Args:
             draft_text: The draft article text to extract search queries from
             verbose: Whether to print progress updates
 
         Returns:
-            Dictionary mapping URLs to their text content
+            Context with inline citations
         """
         try:
 
-            # Perform RAG search
-            passages, urls = await self.rag.aforward(draft_text)
+            ctx, urls = asyncio.run(retrieve_and_pack(draft_text, models=self.models))
 
-            # Create URL-to-content mapping
-            if passages and urls and len(passages) == len(urls):
-                context_dict = dict(zip(urls, passages))
+            if verbose:
+                print(
+                    f"✅ Retrieved context len: {len(ctx)}: URLs: {urls if urls else 'None'}"
+                )
 
-                if verbose:
-                    print(
-                        f"✅ Retrieved {len(context_dict)} URL-content pairs from RAG search"
-                    )
-                    if context_dict:
-                        # Show preview of URLs
-                        urls_preview = list(context_dict.keys())[:3]
-                        for i, url in enumerate(urls_preview, 1):
-                            print(f"   {i}. {url[:80]}...")
-                        if len(context_dict) > 3:
-                            print(f"   ... and {len(context_dict) - 3} more URLs")
-
-                return context_dict
+            if ctx:
+                return ctx
             else:
                 if verbose:
                     print("⚠️ No valid content retrieved from RAG search")
-                return {}
+                return ""
 
         except Exception as e:
             if verbose:
                 print(f"⚠️ RAG search failed: {e}")
-            return {}
+            return ""
 
     def generate_article(
         self, initial_draft: str, verbose: bool = True
@@ -345,6 +326,9 @@ class LinkedInArticleGenerator:
             # Score current article (returns DSPy Prediction)
             prediction = self.judge(current_article)
             score_results = prediction.output
+            score_results.word_count = self.word_count_manager.count_words(
+                current_article
+            )
 
             # if verbose then print score result details and the recommended improvements
             # and the current word count and length status
@@ -352,11 +336,8 @@ class LinkedInArticleGenerator:
                 print(
                     f"📊 Current Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({score_results.percentage:.1f}%)"
                 )
-                current_word_count = (
-                    score_results.word_count
-                    or self.word_count_manager.count_words(current_article)
-                )
-                print(f"📝 Current Word Count: {current_word_count} words")
+
+                print(f"📝 Current Word Count: {score_results.word_count} words")
                 print(f"🎯 Target Score: ≥{self.target_score_percentage}%")
                 print(
                     f"📏 Target Word Count: {self.word_count_manager.target_min}-{self.word_count_manager.target_max}"
@@ -372,23 +353,9 @@ class LinkedInArticleGenerator:
                 self.versions[-1].score_results = score_results
 
             current_percentage = score_results.percentage
-            current_word_count = (
-                score_results.word_count
-                or self.word_count_manager.count_words(current_article)
-            )
             length_status = self.word_count_manager.get_word_count_status(
-                current_word_count
+                score_results.word_count
             )
-
-            if verbose:
-                print(
-                    f"📊 Current Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({current_percentage:.1f}%)"
-                )
-                print(f"📝 Current Word Count: {current_word_count} words")
-                print(f"🎯 Target Score: ≥{self.target_score_percentage}%")
-                print(
-                    f"📏 Target Word Count: {self.word_count_manager.target_min}-{self.word_count_manager.target_max}"
-                )
 
             # Check if both targets achieved (combined quality + length validation)
             quality_achieved = current_percentage >= self.target_score_percentage
@@ -401,7 +368,7 @@ class LinkedInArticleGenerator:
                     )
 
                 self.generation_log.append(
-                    f"Iteration {iteration}: Both targets achieved (Score: {current_percentage:.1f}%, Words: {current_word_count})"
+                    f"Iteration {iteration}: Both targets achieved (Score: {current_percentage:.1f}%, Words: {score_results.word_count})"
                 )
                 break
 
@@ -436,7 +403,7 @@ class LinkedInArticleGenerator:
                 print(f"✏️  Generating improved version...")
 
             improved_article = self._generate_improved_version(
-                current_article, score_results, improvement_analysis
+                current_article, score_results, improvement_analysis, verbose
             )
 
             # Validate improvement
@@ -505,24 +472,10 @@ class LinkedInArticleGenerator:
         if verbose:
             print("🌐 Performing comprehensive RAG search...")
 
-        # Use asyncio to run the async RAG search
-        try:
-            rag_context = asyncio.run(
-                self._perform_rag_search(draft_or_outline, verbose)
-            )
-        except Exception as e:
-            if verbose:
-                print(f"⚠️ RAG search failed: {e}")
-            rag_context = {}
-
-        # Merge provided context with RAG context (RAG context takes precedence)
-        final_context = {**context, **rag_context}
+        final_context = self._perform_rag_search(draft_or_outline, verbose)
 
         if verbose and final_context:
-            print(f"📚 Using combined context: {len(final_context)} URL-content pairs")
-
-        # Store the context for use in improvements
-        self.search_context = final_context
+            print(f"📚 Using context: {len(final_context)}")
 
         # Prepare generation inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
@@ -662,22 +615,20 @@ class LinkedInArticleGenerator:
         current_article: str,
         score_results: ArticleScoreModel,
         improvement_analysis: Dict[str, Any],
+        verbose: bool = False,
     ) -> str:
         """Generate an improved version of the article while maintaining consistency with original draft."""
 
         # Perform fresh RAG search for improvement context
         # This ensures we get updated/additional context for each iteration
-        try:
-            fresh_rag_context = asyncio.run(
-                self._perform_rag_search(self._get_original_draft(), verbose=False)
-            )
-            # Merge with existing context (fresh context takes precedence)
-            combined_context = {**self.search_context, **fresh_rag_context}
-            # Update stored context for future iterations
-            self.search_context = combined_context
-        except Exception as e:
-            # If fresh search fails, use existing context
-            combined_context = self.search_context
+        # Always perform RAG search for comprehensive context
+        if verbose:
+            print("🌐 Performing comprehensive RAG search...")
+
+        context = self._perform_rag_search(current_article, verbose=verbose)
+
+        if verbose and context:
+            print(f"📚 Using context: {len(context)}")
 
         # Prepare improvement inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
@@ -687,7 +638,7 @@ class LinkedInArticleGenerator:
 
         try:
             # Validate context window before improvement
-            context_str = str(combined_context) if combined_context else ""
+            context_str = str(context) if context else ""
             content_parts = {
                 "current_article": current_article,
                 "original_draft": self._get_original_draft(),
@@ -713,7 +664,7 @@ class LinkedInArticleGenerator:
                 result = self.improver(
                     current_article=current_article,
                     original_draft=self._get_original_draft(),
-                    context=combined_context,
+                    context=context,
                     score_feedback=improvement_analysis["detailed_feedback"],
                     scoring_criteria=scoring_criteria,
                     word_count_guidance=word_count_guidance,

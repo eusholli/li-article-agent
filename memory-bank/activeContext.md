@@ -7,7 +7,44 @@
 **Target:** Simplified model selection with dedicated arguments for each component  
 **Timeline:** Current session enhancement completed with improved user experience
 
-### Latest Enhancement: Context Window Management System ✅ NEW
+### Latest Enhancement: Fast RAG Implementation ✅ NEW
+
+#### 1. Complete RAG System Overhaul
+- **New rag_fast.py:** Lean, high-performance web RAG retriever using Tavily + intelligent packing
+- **Fully Async Architecture:** All operations use asyncio for maximum throughput
+- **No LLM Calls During Retrieval:** Eliminates expensive LLM processing during content cleaning
+- **Single Packed Context:** Returns one optimized context string ready for DSPy modules
+- **Intelligent Topic Extraction:** Uses DSPy to analyze drafts and generate optimal search queries
+
+#### 2. Advanced Topic Analysis System
+- **TopicExtractionSignature:** DSPy signature for analyzing article drafts/outlines
+- **TopicExtractionResult:** Pydantic model with main_topic, search_query list, and needs_research flag
+- **Smart Research Detection:** Automatically determines if topic would benefit from web research
+- **Multi-Query Strategy:** Generates up to 3 optimized search queries plus main topic
+- **Context-Aware Queries:** Search queries tailored to article content and LinkedIn audience
+
+#### 3. High-Performance Tavily Integration
+- **TavilyWebRetriever Class:** Async Tavily client with configurable settings
+- **Advanced Search Depth:** Supports both "basic" and "advanced" search modes
+- **Concurrent Processing:** Configurable semaphore for optimal request throughput
+- **Batch URL Extraction:** Processes up to 20 URLs per extract call for efficiency
+- **Quality Guards:** Filters out pages under 200 characters to ensure meaningful content
+
+#### 4. Intelligent Content Processing
+- **Non-LLM Text Cleaning:** Fast boilerplate removal without expensive LLM calls
+- **Salient Sentence Extraction:** Prioritizes sentences with facts, numbers, dates, and key insights
+- **Smart Deduplication:** Aggressive deduplication while maintaining content order
+- **Token-Aware Packing:** Uses tiktoken for accurate token counting and budget management
+- **Per-Document Limits:** Soft caps prevent single sources from consuming entire budget
+
+#### 5. Centralized Context Window Integration
+- **ContextWindowManager Integration:** Uses centralized 35% RAG allocation for intelligent sizing
+- **Dynamic Token Budgets:** Automatically calculates optimal RAG limits based on model context window
+- **Character-to-Token Conversion:** Consistent 4:1 ratio for accurate budget planning
+- **Fallback Safety:** Graceful degradation to 100K tokens when context manager unavailable
+- **Real-Time Budget Reporting:** Detailed logging of context allocation and usage
+
+### Previous Enhancement: Context Window Management System ✅ PREVIOUS
 
 #### 1. Centralized Context Window Management
 - **ContextWindowManager Class:** Unified context window management for all components
@@ -106,6 +143,9 @@
 6. **Pydantic Validation:** Ensure type safety and data structure consistency
 7. **Iterative Refinement:** Focus on incremental improvements rather than complete rewrites
 8. **User Experience Focus:** Eliminate redundant arguments and simplify configuration
+9. **Fast RAG Architecture:** Async-first, LLM-free content processing for maximum performance
+10. **Intelligent Topic Analysis:** Use DSPy for smart research query generation
+11. **Context-Aware Packing:** Optimize content for specific model context windows
 
 ### Key Technical Insights
 - **Scoring Criteria Structure:** Well-organized dictionary in li_article_judge.py enables easy parsing
@@ -115,6 +155,10 @@
 - **Model Selection Strategy:** Different models excel at different tasks (generation vs. scoring vs. RAG)
 - **Cost Optimization:** Strategic model selection can significantly reduce API costs
 - **Context Window Management:** Each model instance maintains its own ConfiguredLM wrapper
+- **RAG Performance:** Async processing and LLM-free cleaning dramatically improve retrieval speed
+- **Topic Analysis Effectiveness:** DSPy-based topic extraction generates more relevant search queries
+- **Content Quality vs. Speed:** Non-LLM processing maintains quality while eliminating expensive API calls
+- **Token Budget Optimization:** Intelligent packing maximizes useful content within context limits
 
 ### Implementation Patterns
 - **Dynamic Adaptation:** System automatically adjusts to criteria changes
@@ -124,6 +168,10 @@
 - **Component-Specific Models:** Each operation can use optimal model for its task
 - **Intelligent Fallbacks:** Graceful degradation when specific models unavailable
 - **Model Instance Reuse:** Caching prevents redundant model initialization
+- **Async-First Design:** All I/O operations use asyncio for maximum concurrency
+- **LLM-Free Processing:** Eliminate expensive API calls during content cleaning
+- **Smart Content Filtering:** Prioritize factual, data-rich content for better article context
+- **Budget-Aware Packing:** Optimize content selection based on available context window
 
 ## Current Work Session
 

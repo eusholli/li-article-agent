@@ -13,6 +13,9 @@
 - **dspy:** Main framework for LLM programming
 - **pydantic:** Data validation and type safety
 - **python-dotenv:** Environment variable management
+- **tavily-python:** High-performance web search API client for RAG
+- **tiktoken:** Accurate token counting for context window management
+- **asyncio:** Built-in async support for concurrent operations
 - **attachments:** File processing and text extraction
 
 ### LLM Provider Integration
@@ -177,11 +180,13 @@ def get_fallback_model() -> str:
 ├── memory-bank/           # Project documentation and context
 ├── li_article_judge.py    # Existing scoring system (enhanced with model selection)
 ├── linkedin_article_generator.py  # Article generation (enhanced with model selection)
-├── rag.py                 # RAG retrieval (enhanced with model selection)
+├── rag.py                 # Original RAG retrieval (legacy)
+├── rag_fast.py            # NEW: High-performance async RAG with intelligent packing
+├── context_window_manager.py  # Centralized context window management
 ├── dspy_factory.py        # Enhanced LLM provider setup with model management
 ├── main.py                # Enhanced CLI with component-specific model arguments
 ├── requirements.txt       # Python dependencies
-├── .env                   # Environment variables (API keys)
+├── .env                   # Environment variables (API keys + TAVILY_API_KEY)
 ├── articles/              # Sample articles for testing
 └── [other implementation files]
 ```
@@ -214,13 +219,15 @@ python main.py \
 - `--model`: Universal fallback model (backward compatible)
 
 ### Enhanced Configuration Management
-- **Environment Variables:** API keys and configuration
+- **Environment Variables:** API keys and configuration (OPENROUTER_API_KEY + TAVILY_API_KEY)
 - **Model Selection:** Component-specific model configuration via CLI
 - **Default Settings:** Sensible defaults for all parameters (free models)
 - **Cost Optimization:** Strategic model selection for budget management
 - **User Customization:** Configurable targets and preferences
 - **Debug Mode:** Enhanced logging with model usage tracking
 - **Fallback Logic:** Intelligent degradation when models unavailable
+- **RAG Configuration:** Tavily search depth, result limits, and processing parameters
+- **Context Window Budgets:** Centralized allocation strategy (35% for RAG context)
 
 ## Quality Assurance
 
@@ -266,6 +273,21 @@ python main.py \
 - **Cost Tracking:** Monitor API usage and costs per model
 - **Debug Output:** Detailed intermediate results with model information
 - **Fallback Logging:** Track when and why fallbacks are used
+- **RAG Performance Tracking:** Async operation timing, search result quality, and packing efficiency
+- **Topic Analysis Logging:** Track topic extraction accuracy and search query effectiveness
+- **Context Window Usage:** Monitor allocation efficiency and budget utilization
+
+### Enhanced Metrics Collection
+- **Success Rate:** Percentage of articles achieving targets per model combination
+- **Iteration Count:** Average iterations to reach goals with different models
+- **Quality Trends:** Score improvements over time by model type
+- **Performance Benchmarks:** Speed and efficiency metrics per model
+- **Cost Metrics:** API usage and cost analysis across model combinations
+- **Model Effectiveness:** Track which models perform best for each operation type
+- **Optimization Impact:** Measure benefits of strategic model selection
+- **RAG Effectiveness:** Measure impact of web context on article quality and scoring
+- **Search Query Quality:** Track relevance and usefulness of generated search queries
+- **Content Packing Efficiency:** Monitor how well content fits within context budgets
 
 ### Enhanced Metrics Collection
 - **Success Rate:** Percentage of articles achieving targets per model combination

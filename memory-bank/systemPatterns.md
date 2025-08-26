@@ -112,10 +112,11 @@ while not (score >= target_score and word_count_valid):
 2. **CriteriaExtractor:** Dynamically loads and parses scoring criteria
 3. **ArticleGenerator:** Creates and improves articles using configurable DSPy models
 4. **ArticleScorer:** Evaluates articles using configurable scoring models
-5. **RAG Retriever:** Web search and context retrieval with configurable models
-6. **WordCountManager:** Manages length constraints and adjustments
-7. **FeedbackProcessor:** Converts scores into improvement instructions
-8. **IterationController:** Orchestrates the improvement loop with optimal models
+5. **Fast RAG Retriever (rag_fast.py):** High-performance async web search and intelligent content packing
+6. **Topic Extraction System:** DSPy-based analysis for optimal search query generation
+7. **WordCountManager:** Manages length constraints and adjustments
+8. **FeedbackProcessor:** Converts scores into improvement instructions
+9. **IterationController:** Orchestrates the improvement loop with optimal models
 
 ### Data Flow Patterns
 ```
@@ -127,7 +128,9 @@ SCORING_CRITERIA (li_article_judge.py)
     ↓ (import & parse)
 CriteriaExtractor
     ↓ (criteria summary)
-ArticleGenerator (with generator_model)
+Fast RAG System (rag_fast.py)
+    ↓ (topic extraction → async search → intelligent packing)
+ArticleGenerator (with generator_model + RAG context)
     ↓ (generated article)
 WordCountManager
     ↓ (word count validation)
@@ -136,6 +139,21 @@ LinkedInArticleScorer (with judge_model)
 FeedbackProcessor
     ↓ (improvement instructions)
 ArticleGenerator (next iteration with optimal model)
+```
+
+### Fast RAG Data Flow
+```
+Article Draft/Outline
+    ↓ (DSPy topic analysis)
+TopicExtractionSignature (with rag_model)
+    ↓ (main_topic, search_queries, needs_research)
+TavilyWebRetriever (async search)
+    ↓ (concurrent search + extract)
+Non-LLM Content Processing
+    ↓ (boilerplate removal + salient extraction)
+TextPacker (token-aware packing)
+    ↓ (optimized context string)
+ArticleGenerator (enhanced with web context)
 ```
 
 ### Model Selection Flow
@@ -154,6 +172,36 @@ Execution (optimal model per operation)
 ```
 
 ## DSPy Module Architecture
+
+### Fast RAG Signature Pattern
+```python
+class TopicExtractionSignature(dspy.Signature):
+    """Extract the main topic for web search from article draft or outline."""
+
+    draft_or_outline = dspy.InputField(
+        desc="Article draft or outline to analyze for main topic"
+    )
+
+    output: TopicExtractionResult = dspy.OutputField(
+        desc="Extracted main topic, search queries, and research needs flag"
+    )
+
+class TopicExtractionResult(BaseModel):
+    """Result structure for topic extraction."""
+
+    main_topic: str = Field(
+        ...,
+        description="Main topic/subject of the article for web search",
+    )
+    search_query: List[str] = Field(
+        ...,
+        description="A list of at most 3 optimized search queries to find relevant context for the topic",
+    )
+    needs_research: bool = Field(
+        ...,
+        description="Boolean: whether this topic would benefit from web research context",
+    )
+```
 
 ### Signature Design Pattern
 ```python
@@ -235,12 +283,22 @@ except ScoringError:
 
 ## Performance Optimization Patterns
 
+### Fast RAG Performance Strategy
+- **Async-First Architecture:** All I/O operations use asyncio for maximum concurrency
+- **LLM-Free Content Processing:** Eliminate expensive API calls during text cleaning
+- **Intelligent Content Filtering:** Prioritize factual, data-rich sentences
+- **Token-Aware Packing:** Use tiktoken for accurate budget management
+- **Batch Processing:** Process up to 20 URLs per Tavily extract call
+- **Concurrent Search:** Configurable semaphore for optimal request throughput
+- **Smart Deduplication:** Aggressive deduplication while maintaining content order
+
 ### Enhanced Caching Strategy
 - **Criteria Caching:** Cache parsed criteria to avoid repeated parsing
 - **Model Instance Caching:** `_model_instance_cache` prevents redundant model creation
 - **Component LM Caching:** Reuse ConfiguredLM instances across operations
 - **Result Caching:** Store intermediate results for debugging
 - **Factory Pattern Optimization:** Single model instance creation per unique model name
+- **Topic Analysis Caching:** Cache topic extraction results for similar drafts
 
 ### Incremental Improvement Strategy
 - **Targeted Changes:** Focus improvements on specific weak areas
@@ -248,6 +306,8 @@ except ScoringError:
 - **Progressive Enhancement:** Build quality incrementally
 - **Model-Optimized Improvements:** Use best model for each improvement type
 - **Cost-Aware Iterations:** Balance improvement quality with API costs
+- **Context-Enhanced Iterations:** Use RAG context to improve factual accuracy and depth
+- **Smart Research Integration:** Only fetch web context when topic analysis indicates benefit
 
 ## Integration Patterns
 

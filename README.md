@@ -1,6 +1,6 @@
 # LinkedIn Article Generator - Usage Guide
 
-A DSPy-powered REACT system that transforms article drafts or outlines into world-class LinkedIn articles through intelligent web search, context integration, and iterative improvement with comprehensive scoring.
+A DSPy-powered system that transforms article drafts or outlines into world-class LinkedIn articles through high-performance web search, intelligent content packing, and iterative improvement with comprehensive scoring.
 
 ## Quick Start
 
@@ -23,22 +23,26 @@ python main.py --target-score 85 --max-iterations 5
 
 ## System Overview
 
-The LinkedIn Article Generator uses a sophisticated REACT (Reason-Act-Observe) process with intelligent web search:
+The LinkedIn Article Generator uses a sophisticated process with high-performance web research and intelligent content integration:
 
 1. **Draft Analysis**: Analyzes your input to determine if web research would be beneficial
-2. **Intelligent Web Search**: Uses Tavily API to gather relevant, current context when needed
-3. **Enhanced Generation**: Creates articles with rich context and supporting evidence
-4. **Comprehensive Scoring**: Evaluates using 18 criteria categories (180 total points)
-5. **Gap Analysis**: Identifies specific improvement areas
-6. **Iterative Refinement**: Generates improved versions until target achieved
-7. **World-Class Output**: Delivers articles scoring ≥89% (world-class tier)
+2. **Fast Async Web Search**: Uses Tavily API with concurrent processing for maximum speed
+3. **Intelligent Topic Extraction**: DSPy-powered analysis generates optimal search queries
+4. **Smart Content Packing**: Token-aware content optimization for context windows
+5. **Enhanced Generation**: Creates articles with rich, relevant web context
+6. **Comprehensive Scoring**: Evaluates using 18 criteria categories (180 total points)
+7. **Gap Analysis**: Identifies specific improvement areas
+8. **Iterative Refinement**: Generates improved versions until target achieved
+9. **World-Class Output**: Delivers articles scoring ≥89% (world-class tier)
 
 ### Key Features
-- **REACT Architecture**: Intelligent reasoning about when to search for additional context
-- **Web Research Integration**: Automatic gathering of relevant, up-to-date information
-- **Draft Scoping**: Comprehensive analysis of input drafts before generation
-- **Citation-Worthy Content**: Filters web content for high-quality, authoritative sources
-- **HTML Content Processing**: Robust cleaning and processing of web-scraped content
+- **Fast RAG Architecture**: High-performance async web search with intelligent packing
+- **LLM-Free Content Processing**: Eliminates expensive API calls during text cleaning
+- **Intelligent Topic Analysis**: DSPy-based extraction of optimal search queries
+- **Smart Content Filtering**: Prioritizes factual, data-rich content with deduplication
+- **Token-Aware Packing**: Uses tiktoken for accurate context window management
+- **Centralized Context Management**: 35% allocation strategy for optimal RAG usage
+- **Batch Processing**: Up to 20 URLs per extract call for maximum efficiency
 - **Multi-Provider LLM Support**: OpenRouter, OpenAI, Anthropic, Ollama integration
 
 ## Scoring System
@@ -78,7 +82,7 @@ python main.py --draft "AI is transforming business operations..."
 python main.py --file articles/my_draft.txt
 ```
 
-**Note**: The system automatically determines whether web research would benefit your article and searches for relevant context when needed.
+**Note**: The system automatically determines whether web research would benefit your article and uses high-performance async search to gather relevant context when needed.
 
 ### Advanced Options
 
@@ -121,7 +125,7 @@ python main.py --quiet --file draft.txt --output article.md
 --quiet, -q              Suppress progress messages
 ```
 
-**REACT Features**: The system automatically analyzes your draft and determines whether web research would enhance the article. When beneficial, it searches for relevant context using the Tavily API and integrates findings into the generation process.
+**Fast RAG Features**: The system automatically analyzes your draft using DSPy to extract optimal search queries. When beneficial, it uses high-performance async search with Tavily API to gather relevant context and intelligently packs it for optimal token usage.
 
 ## Configuration
 
@@ -160,13 +164,15 @@ python main.py --generator-model "ollama/llama2"
 ```
 
 #### Web Search Setup (Required)
-For the REACT system's web research capabilities:
+For the Fast RAG system's high-performance web research capabilities:
 
 ```bash
 export TAVILY_API_KEY="your-tavily-api-key"
 ```
 
 Get your free Tavily API key at: https://tavily.com/
+
+The Fast RAG system uses advanced async processing and intelligent content packing for optimal performance.
 
 ### Model Recommendations
 
@@ -265,7 +271,7 @@ python main.py --file my_draft.txt
 
 ### Console Output
 ```
-🤖 Setting up DSPy with model: openrouter/moonshotai/kimi-k2:free
+� Setting up DSPy with model: openrouter/moonshotai/kimi-k2:free
 🔧 Model Configuration:
    Generator: openrouter/moonshotai/kimi-k2:free
    Judge: openrouter/deepseek/deepseek-r1-0528:free
@@ -278,7 +284,7 @@ python main.py --file my_draft.txt
 🚀 Starting LinkedIn Article REACT Generation Process
 ============================================================
 
-🧠 REACT Phase: Reasoning about topic and research needs
+�🧠 REACT Phase: Reasoning about topic and research needs
 📊 Topic: "The Future of Remote Work"
 🔍 Research Decision: YES - Current trends and data would enhance this article
 📝 Search Queries: ["remote work statistics 2024", "hybrid work trends", "remote work productivity studies"]

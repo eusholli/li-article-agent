@@ -249,9 +249,6 @@ class ComprehensiveArticleScoreOutput(BaseModel):
         ..., min_length=100, description="Comprehensive article feedback"
     )
 
-    # Article metadata
-    word_count: int = Field(..., description="Word count of the evaluated article")
-
     @validator("criterion_scores")
     def validate_criterion_completeness(cls, v):
         """Ensure all expected criteria are present."""
@@ -594,8 +591,7 @@ OUTPUT STRUCTURE VALIDATION:
 - total_score: Sum of all weighted criterion scores
 - percentage: (total_score / 180) * 100
 - performance_tier: Based on percentage thresholds
-- overall_feedback: Comprehensive analysis (100+ characters)
-- word_count: Article word count"""
+- overall_feedback: Comprehensive analysis (100+ characters)"""
     )
 
 
@@ -728,11 +724,6 @@ class LinkedInArticleScorer(dspy.Module):
                 category_breakdown=category_breakdown,
             )
 
-        # dspy.inspect_history(1)  # Inspect history for debugging
-
-        # Calculate word count for the article
-        word_count = len(article_text.split()) if article_text else 0
-
         score_model = ArticleScoreModel(
             total_score=total_score,
             max_score=max_score,
@@ -740,7 +731,7 @@ class LinkedInArticleScorer(dspy.Module):
             category_scores=category_scores,
             overall_feedback=feedback_result.output.overall_feedback,
             performance_tier=tier,
-            word_count=word_count,
+            word_count=None,
         )
 
         return dspy.Prediction(output=score_model)
@@ -846,7 +837,7 @@ class FastLinkedInArticleScorer(dspy.Module):
             category_scores=category_scores,
             overall_feedback=comprehensive_result.overall_feedback,
             performance_tier=comprehensive_result.performance_tier,
-            word_count=comprehensive_result.word_count,
+            word_count=None,
         )
 
     def _validate_and_fix_result(

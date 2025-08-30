@@ -8,40 +8,22 @@ process using DSPy, scoring criteria, and word count management.
 
 import dspy
 from typing import Dict, Any, List, Optional, Tuple
-from dataclasses import dataclass
 import json
 import time
 import re
 import asyncio
 
+from models import ArticleVersion, JudgementModel
 from li_article_judge import (
     LinkedInArticleScorer,
     FastLinkedInArticleScorer,
-    ArticleScoreModel,
+    ComprehensiveLinkedInArticleJudge,
 )
 from criteria_extractor import CriteriaExtractor
 from word_count_manager import WordCountManager
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
 from rag_fast import retrieve_and_pack
-
-
-@dataclass
-class ArticleVersion:
-    """Represents a version of an article with its metadata."""
-
-    version: int
-    content: str
-    word_count: int
-    score_results: Optional[ArticleScoreModel] = (
-        None  # Will come from prediction.output
-    )
-    improvement_feedback: str = ""
-    timestamp: float = 0.0
-
-    def __post_init__(self):
-        if self.timestamp == 0.0:
-            self.timestamp = time.time()
 
 
 class ArticleGenerationSignature(dspy.Signature):
@@ -151,6 +133,156 @@ class LinkedInArticleGenerator:
     4. Iteratively improve until target score (≥89%) is achieved
     """
 
+    class VerboseManager:
+        """Centralized manager for beautiful, structured verbose output."""
+
+        def __init__(self, generator_instance):
+            self.generator = generator_instance
+
+        def print_section_header(self, title: str, emoji: str = "📋"):
+            """Print a formatted section header with borders."""
+            border = "=" * 60
+            print(f"\n{border}")
+            print(f"{emoji} {title.upper()}")
+            print(f"{border}")
+
+        def print_generation_start(self):
+            """Print beautiful generation start header with all key parameters."""
+            self.print_section_header("LinkedIn Article Generation Process", "🚀")
+
+            print("📊 CONFIGURATION PARAMETERS:")
+            print(f"  • Target Score: ≥{self.generator.target_score_percentage}%")
+            print(f"  • Max Iterations: {self.generator.max_iterations}")
+            print(
+                f"  • Word Count Range: {self.generator.word_count_manager.target_min}-{self.generator.word_count_manager.target_max}"
+            )
+            print(f"  • Generator Model: {self.generator.models['generator'].name}")
+            print(f"  • Judge Model: {self.generator.models['judge'].name}")
+            print(f"  • RAG Model: {self.generator.models['rag'].name}")
+            print(f"  • Recreate Context: {self.generator.recreate_ctx}")
+
+        def print_iteration_status(self, iteration: int, version: "ArticleVersion"):
+            """Print rich iteration status with scores and metrics."""
+            print(f"\n🔄 ITERATION {iteration}: SCORING AND ANALYSIS")
+            print("-" * 50)
+
+            judgement = version.judgement
+            print("📊 CURRENT STATUS:")
+            print(f"  • Version: {version.version}")
+            print(f"  • Word Count: {judgement.word_count} words")
+            print(
+                f"  • Score: {judgement.total_score}/{judgement.max_score} ({judgement.percentage:.1f}%)"
+            )
+            print(f"  • Target: ≥{self.generator.target_score_percentage}%")
+            print(
+                f"  • Target Range: {self.generator.word_count_manager.target_min}-{self.generator.word_count_manager.target_max}"
+            )
+
+            if judgement.improvement_prompt:
+                print(f"\n🔍 IMPROVEMENT GUIDANCE:")
+                print(f"  {judgement.improvement_prompt}")
+
+            if judgement.focus_areas:
+                print(f"\n🎯 FOCUS AREAS:")
+                print(f"  {judgement.focus_areas}")
+
+        def print_rag_status(
+            self, context_length: int, urls: Optional[List[str]] = None
+        ):
+            """Print RAG search results and context information."""
+            print("🌐 RAG SEARCH RESULTS:")
+            if context_length > 0:
+                print(f"  ✅ Retrieved context: {context_length} characters")
+                if urls:
+                    print(f"  📚 Source URLs: {len(urls)} found")
+                    for i, url in enumerate(urls[:3], 1):  # Show first 3 URLs
+                        print(f"    {i}. {url}")
+                    if len(urls) > 3:
+                        print(f"    ... and {len(urls) - 3} more")
+                else:
+                    print("  📚 Source URLs: None specified")
+            else:
+                print("  ⚠️ No context retrieved from RAG search")
+
+        def print_context_reuse(self, context_length: int, recreate_ctx: bool):
+            """Print context reuse or fresh search status."""
+            if recreate_ctx:
+                print("🌐 CONTEXT STRATEGY:")
+                print("  🔄 Performing fresh RAG search (recreate_ctx=True)")
+            else:
+                print("🌐 CONTEXT STRATEGY:")
+                print(f"  🔄 Reusing initial context: {context_length} characters")
+                print("  📋 recreate_ctx=False - maintaining consistency")
+
+        def print_generation_phase(self, phase: str, details: str = ""):
+            """Print generation phase status."""
+            print(f"\n📝 {phase.upper()}")
+            if details:
+                print(f"  {details}")
+
+        def print_final_summary(self, final_result: Dict[str, Any]):
+            """Print comprehensive final summary with all metrics."""
+            self.print_section_header("Final Results", "🏆")
+
+            final_score = final_result["final_score"]
+            improvement_summary = final_result["improvement_summary"]
+
+            print("📊 FINAL METRICS:")
+            print(
+                f"  • Final Score: {final_score.total_score}/{self.generator.criteria_extractor.get_total_possible_score()} ({final_score.percentage:.1f}%)"
+            )
+            print(f"  • Target Score: ≥{self.generator.target_score_percentage}%")
+            print(
+                f"  • Target Achieved: {'✅ YES' if final_result['target_achieved'] else '❌ NO'}"
+            )
+            print(
+                f"  • Quality Achieved: {'✅ YES' if final_result['quality_achieved'] else '❌ NO'}"
+            )
+            print(
+                f"  • Length Achieved: {'✅ YES' if final_result['length_achieved'] else '❌ NO'}"
+            )
+            print(
+                f"  • Iterations Used: {final_result['iterations_used']}/{self.generator.max_iterations}"
+            )
+            print(f"  • Final Word Count: {final_result['word_count']} words")
+
+            if len(self.generator.versions) > 1:
+                print("\n📈 IMPROVEMENT SUMMARY:")
+                print(
+                    f"  • Score Improvement: +{improvement_summary['score_improvement']:.1f}%"
+                )
+                print(
+                    f"  • Word Count Change: {improvement_summary['word_count_change']:+d} words"
+                )
+                print(
+                    f"  • Versions Created: {improvement_summary['versions_created']}"
+                )
+
+            print("\n📋 GENERATION LOG:")
+            for log_entry in final_result["generation_log"]:
+                print(f"  • {log_entry}")
+
+            if final_result["target_achieved"]:
+                print("\n🎉 SUCCESS! Article achieved world-class status!")
+            else:
+                print(
+                    f"\n💡 Continue improving to reach the {self.generator.target_score_percentage}% target."
+                )
+
+        def print_variable_dump(
+            self, variables: Dict[str, Any], title: str = "Variable Dump"
+        ):
+            """Print debug dump of key variables."""
+            print(f"\n🔧 {title.upper()}")
+            print("-" * 40)
+            for key, value in variables.items():
+                if isinstance(value, (int, float)):
+                    print(f"  • {key}: {value}")
+                elif isinstance(value, str) and len(value) > 100:
+                    print(f"  • {key}: {value[:100]}... (truncated)")
+                else:
+                    print(f"  • {key}: {value}")
+
     def __init__(
         self,
         target_score_percentage: float,
@@ -158,6 +290,7 @@ class LinkedInArticleGenerator:
         word_count_min: int,
         word_count_max: int,
         models: Dict[str, DspyModelConfig],
+        recreate_ctx: bool = False,
     ):
         """
         Initialize the LinkedIn Article Generator.
@@ -174,14 +307,22 @@ class LinkedInArticleGenerator:
         self.target_score_percentage = target_score_percentage
         self.max_iterations = max_iterations
 
+        # Initialize VerboseManager for beautiful verbose output
+        self.verbose_manager = self.VerboseManager(self)
+
         # Store model preferences
         self.models = models
 
         # Initialize context window manager
         self.context_manager = ContextWindowManager(models["generator"])
 
-        # self.judge = LinkedInArticleScorer(models=models)
-        self.judge = FastLinkedInArticleScorer(models=models)
+        # Use the new comprehensive judge with encapsulated analysis logic
+        self.judge = ComprehensiveLinkedInArticleJudge(
+            models=models,
+            min_length=word_count_min,
+            max_length=word_count_max,
+            passing_score_percentage=target_score_percentage,
+        )
         self.criteria_extractor = CriteriaExtractor()
         self.word_count_manager = WordCountManager(word_count_min, word_count_max)
 
@@ -194,6 +335,7 @@ class LinkedInArticleGenerator:
         self.versions: List[ArticleVersion] = []
         self.generation_log: List[str] = []
         self.original_draft: Optional[str] = None
+        self.recreate_ctx = recreate_ctx
 
     def _perform_rag_search(self, draft_text: str, verbose: bool = True) -> str:
         """
@@ -211,9 +353,7 @@ class LinkedInArticleGenerator:
             ctx, urls = asyncio.run(retrieve_and_pack(draft_text, models=self.models))
 
             if verbose:
-                print(
-                    f"✅ Retrieved context len: {len(ctx)}: URLs: {urls if urls else 'None'}"
-                )
+                self.verbose_manager.print_rag_status(len(ctx), urls)
 
             if ctx:
                 return ctx
@@ -257,8 +397,7 @@ class LinkedInArticleGenerator:
             Dict containing final article, score, and generation metadata
         """
         if verbose:
-            print("🚀 Starting LinkedIn Article Generation Process")
-            print("=" * 60)
+            self.verbose_manager.print_generation_start()
 
         # Clear previous generation data
         self.versions.clear()
@@ -271,167 +410,114 @@ class LinkedInArticleGenerator:
 
         # Generate initial markdown article from draft/outline (Version 1)
         if verbose:
-            print(f"📝 Generating initial markdown article from draft...")
+            self.verbose_manager.print_generation_phase(
+                "Generating initial markdown article from draft"
+            )
 
-        initial_article = self._generate_initial_article(
+        initial_article, initial_context = self._generate_initial_article(
             initial_draft, context, verbose
         )
 
-        word_count = self.word_count_manager.count_words(initial_article)
-
-        initial_version = ArticleVersion(
-            version=1, content=initial_article, word_count=word_count
-        )
-        self.versions.append(initial_version)
-
-        if verbose:
-            print(f"📝 Generated initial article: {word_count} words")
-
-        self.generation_log.append(
-            f"Version 1: Generated initial markdown article from draft ({word_count} words)"
-        )
-
         # Start iterative improvement process with the generated article
-        final_result = self._iterative_improvement_process(initial_article, verbose)
+        final_result = self._iterative_improvement_process(
+            initial_article, initial_context, verbose
+        )
 
         if verbose:
-            self._print_final_summary(final_result)
+            self.verbose_manager.print_final_summary(final_result)
 
         return final_result
 
     def _iterative_improvement_process(
-        self, initial_article: str, verbose: bool
+        self, initial_article: str, initial_context: str, verbose: bool
     ) -> Dict[str, Any]:
         """Run the iterative improvement process with combined quality and length validation."""
         current_article = initial_article
+        current_context = initial_context
         iteration = 0
-        # generate default score_results to avoid reference before assignment
-        score_results = ArticleScoreModel(
-            total_score=0,
-            percentage=0.0,
-            word_count=0,
-            overall_feedback="",
-            performance_tier="",
-            category_scores={},
-            max_score=0,
-        )
 
-        while iteration < self.max_iterations:
+        # Ensure at least one iteration runs to get a judgement
+        while iteration < max(1, self.max_iterations):
             iteration += 1
 
-            if verbose:
-                print(f"\n🔄 Iteration {iteration}: Scoring and Analysis")
-                print("-" * 40)
-
-            # Score current article (returns DSPy Prediction)
-            prediction = self.judge(current_article)
-            score_results = prediction.output
-            score_results.word_count = self.word_count_manager.count_words(
-                current_article
+            # Create a pending judgement for the temporary version
+            pending_judgement = JudgementModel(
+                total_score=0,
+                max_score=180,
+                percentage=0.0,
+                performance_tier="Pending",
+                word_count=len(current_article.split()),  # Quick word count estimate
+                meets_requirements=False,
+                improvement_prompt="Pending analysis - this is a temporary placeholder that will be replaced with actual improvement guidance from the comprehensive judge.",
+                focus_areas="Pending analysis - temporary placeholder for focus areas",
+                overall_feedback=None,  # Optional field for comprehensive feedback
             )
 
-            # if verbose then print score result details and the recommended improvements
-            # and the current word count and length status
-            if verbose:
-                print(
-                    f"📊 Current Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({score_results.percentage:.1f}%)"
-                )
-
-                print(f"📝 Current Word Count: {score_results.word_count} words")
-                print(f"🎯 Target Score: ≥{self.target_score_percentage}%")
-                print(
-                    f"📏 Target Word Count: {self.word_count_manager.target_min}-{self.word_count_manager.target_max}"
-                )
-                print("🔍 Improvement Suggestions:")
-                for category, results in score_results.category_scores.items():
-                    for r in results:
-                        if hasattr(r, "suggestions") and r.suggestions:
-                            print(f"  [{category}] {r.suggestions}")
-
-            # Update current version with score
-            if self.versions:
-                self.versions[-1].score_results = score_results
-
-            current_percentage = score_results.percentage
-            length_status = self.word_count_manager.get_word_count_status(
-                score_results.word_count
+            # Create a temporary version for judging
+            temp_version = ArticleVersion(
+                version=iteration + 1,
+                content=current_article,
+                context=current_context,
+                recreate_ctx=self.recreate_ctx,
+                judgement=pending_judgement,  # Pending placeholder
             )
 
-            # Check if both targets achieved (combined quality + length validation)
-            quality_achieved = current_percentage >= self.target_score_percentage
-            length_achieved = length_status["within_range"]
+            # Judge with the temporary version included
+            prediction = self.judge(self.versions + [temp_version])
+            judgement = prediction.output  # This is the real judgement
 
-            if quality_achieved and length_achieved:
+            # Now create the final version with the actual judgement
+            version = ArticleVersion(
+                version=iteration + 1,
+                content=current_article,
+                context=current_context,
+                recreate_ctx=self.recreate_ctx,
+                judgement=judgement,  # Real judgement from the judge
+            )
+            self.versions.append(version)
+
+            if verbose:
+                self.verbose_manager.print_iteration_status(iteration, version)
+
+            self.generation_log.append(
+                f"Version {version.version}: Improved article ({version.judgement.word_count} words, improvement {version.judgement.improvement_prompt})"
+            )
+
+            # Check if targets are achieved using the judge's decision
+            if version.judgement.meets_requirements:
                 if verbose:
                     print(
                         f"🎉 BOTH TARGETS ACHIEVED! Article reached world-class status with optimal length!"
                     )
 
                 self.generation_log.append(
-                    f"Iteration {iteration}: Both targets achieved (Score: {current_percentage:.1f}%, Words: {score_results.word_count})"
+                    f"Iteration {iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
                 )
                 break
 
-            elif quality_achieved and not length_achieved:
-                if verbose:
-                    print(
-                        f"✅ Quality target achieved, but length needs adjustment: {length_status['guidance']}"
-                    )
-
-            elif not quality_achieved and length_achieved:
-                if verbose:
-                    print(
-                        f"✅ Length target achieved, but quality needs improvement: {current_percentage:.1f}% vs {self.target_score_percentage}% target"
-                    )
-
             else:
                 if verbose:
-                    print(
-                        f"⚠️  Both targets need work: Quality ({current_percentage:.1f}%) and Length ({length_status['guidance']})"
-                    )
+                    print(f"⚠️ Targets not yet achieved: {judgement.focus_areas}")
 
-            # Analyze improvement needs
-            improvement_analysis = self._analyze_improvement_needs(
-                score_results, current_article
-            )
-
+            # Generate improved version using the judge's improvement prompt
             if verbose:
-                print(f"🔍 Focus Areas: {improvement_analysis['focus_summary']}")
+                self.verbose_manager.print_generation_phase(
+                    "Generating improved version"
+                )
 
-            # Generate improved version
-            if verbose:
-                print(f"✏️  Generating improved version...")
-
-            improved_article = self._generate_improved_version(
-                current_article, score_results, improvement_analysis, verbose
-            )
-
-            # Validate improvement
-            new_word_count = self.word_count_manager.count_words(improved_article)
-
-            # Create new version
-            version = ArticleVersion(
-                version=iteration + 1,
-                content=improved_article,
-                word_count=new_word_count,
-                improvement_feedback=improvement_analysis["detailed_feedback"],
-            )
-            self.versions.append(version)
-
-            if verbose:
-                print(f"📝 Version {version.version} created: {new_word_count} words")
-
-            self.generation_log.append(
-                f"Version {version.version}: Improved article ({new_word_count} words, targeting {improvement_analysis['focus_summary']})"
+            improved_article, used_context = (
+                self._generate_improved_version_with_judgement(
+                    current_article, judgement, verbose
+                )
             )
 
             current_article = improved_article
+            current_context = used_context
 
         # Final scoring
-        # prediction = self.judge.forward(current_article)
-        final_score_results = score_results
+        final_judgement = self.versions[-1].judgement
         final_word_count = (
-            final_score_results.word_count
+            final_judgement.word_count
             or self.word_count_manager.count_words(current_article)
         )
         final_length_status = self.word_count_manager.get_word_count_status(
@@ -439,18 +525,18 @@ class LinkedInArticleGenerator:
         )
 
         if self.versions:
-            self.versions[-1].score_results = final_score_results
+            self.versions[-1].judgement = final_judgement
 
         # Prepare final result with combined target achievement
         final_quality_achieved = (
-            final_score_results.percentage >= self.target_score_percentage
+            final_judgement.percentage >= self.target_score_percentage
         )
         final_length_achieved = final_length_status["within_range"]
         both_targets_achieved = final_quality_achieved and final_length_achieved
 
         final_result = {
             "final_article": current_article,
-            "final_score": final_score_results,
+            "final_score": final_judgement,
             "target_achieved": both_targets_achieved,
             "quality_achieved": final_quality_achieved,
             "length_achieved": final_length_achieved,
@@ -465,17 +551,23 @@ class LinkedInArticleGenerator:
 
     def _generate_initial_article(
         self, draft_or_outline: str, context: Dict[str, str], verbose: bool
-    ) -> str:
-        """Generate initial markdown article from draft/outline using ArticleGenerationSignature."""
+    ) -> Tuple[str, str]:
+        """Generate initial markdown article from draft/outline using ArticleGenerationSignature.
+
+        Returns:
+            Tuple of (generated_article, context_used)
+        """
 
         # Always perform RAG search for comprehensive context
         if verbose:
-            print("🌐 Performing comprehensive RAG search...")
+            self.verbose_manager.print_generation_phase(
+                "Performing comprehensive RAG search"
+            )
 
         final_context = self._perform_rag_search(draft_or_outline, verbose)
 
         if verbose and final_context:
-            print(f"📚 Using context: {len(final_context)}")
+            print(f"📚 Using context: {len(final_context)} characters")
 
         # Prepare generation inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
@@ -499,7 +591,7 @@ class LinkedInArticleGenerator:
                 if verbose:
                     print(f"⚠️ Context window validation failed: {e}")
                 # Reduce context size and retry
-                final_context = {}
+                final_context = ""
                 context_str = ""
                 content_parts["context"] = ""
                 self.context_manager.validate_content(content_parts)
@@ -513,127 +605,49 @@ class LinkedInArticleGenerator:
                     word_count_guidance=word_count_guidance,
                 )
 
-            return result.generated_article
+            return result.generated_article, final_context
 
         except Exception as e:
             if verbose:
                 print(f"⚠️ Initial generation failed, using draft as fallback: {e}")
 
             # Fallback to original draft if generation fails
-            return draft_or_outline
+            return draft_or_outline, final_context or ""
 
-    def _analyze_improvement_needs(
-        self, score_results: ArticleScoreModel, current_article: str
-    ) -> Dict[str, Any]:
-        """Analyze what improvements are needed based on scoring results."""
+    def _generate_improved_version_with_judgement(
+        self, current_article: str, judgement: JudgementModel, verbose: bool = False
+    ) -> Tuple[str, str]:
+        """Generate an improved version using the judge's improvement prompt.
 
-        # Get improvement guidelines from criteria extractor
-        improvement_guidelines = self.criteria_extractor.get_improvement_guidelines(
-            score_results
-        )
+        Returns:
+            Tuple of (improved_article, context_used)
+        """
 
-        # Get gap analysis
-        gap_analysis = self.criteria_extractor.analyze_score_gaps(
-            score_results, self.target_score_percentage
-        )
-
-        # Get word count analysis
-        word_count = self.word_count_manager.count_words(current_article)
-        length_analysis = self.word_count_manager.analyze_length_vs_quality_tradeoffs(
-            word_count, score_results.percentage
-        )
-
-        # Determine focus areas
-        priority_categories = gap_analysis["priority_categories"][
-            :3
-        ]  # Top 3 priority areas
-        focus_areas = [cat["category"] for cat in priority_categories]
-
-        focus_summary = (
-            ", ".join(focus_areas) if focus_areas else "General quality improvements"
-        )
-
-        # Generate detailed feedback
-        detailed_feedback = self._generate_detailed_feedback(
-            score_results, gap_analysis, length_analysis, improvement_guidelines
-        )
-
-        return {
-            "score_results": score_results,
-            "gap_analysis": gap_analysis,
-            "length_analysis": length_analysis,
-            "focus_areas": focus_areas,
-            "focus_summary": focus_summary,
-            "detailed_feedback": detailed_feedback,
-            "improvement_guidelines": improvement_guidelines,
-        }
-
-    def _generate_detailed_feedback(
-        self,
-        score_results: ArticleScoreModel,
-        gap_analysis: Dict[str, Any],
-        length_analysis: Dict[str, Any],
-        improvement_guidelines: str,
-    ) -> str:
-        """Generate comprehensive feedback for improvement."""
-
-        feedback_parts = []
-
-        # Current performance summary
-        feedback_parts.append("CURRENT PERFORMANCE ANALYSIS:")
-        feedback_parts.append(
-            f"Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({score_results.percentage:.1f}%)"
-        )
-        feedback_parts.append(f"Gap to target: {gap_analysis['total_gap']} points")
-        feedback_parts.append("")
-
-        # Priority improvement areas
-        if gap_analysis["priority_categories"]:
-            feedback_parts.append("TOP PRIORITY IMPROVEMENTS:")
-            for i, cat_info in enumerate(gap_analysis["priority_categories"][:3], 1):
-                category = cat_info["category"]
-                gap = cat_info["gap"]
-                weight = cat_info["weight"]
-                feedback_parts.append(
-                    f"{i}. {category}: +{gap} points needed (category weight: {weight})"
-                )
-            feedback_parts.append("")
-
-        # Length vs quality strategy
-        feedback_parts.append("LENGTH & QUALITY STRATEGY:")
-        feedback_parts.append(f"Primary focus: {length_analysis['strategy']}")
-        feedback_parts.append(f"Risk level: {length_analysis['risk_level']}")
-        feedback_parts.append("")
-
-        # Specific improvement guidelines
-        feedback_parts.append(improvement_guidelines)
-
-        return "\n".join(feedback_parts)
-
-    def _generate_improved_version(
-        self,
-        current_article: str,
-        score_results: ArticleScoreModel,
-        improvement_analysis: Dict[str, Any],
-        verbose: bool = False,
-    ) -> str:
-        """Generate an improved version of the article while maintaining consistency with original draft."""
-
-        # Perform fresh RAG search for improvement context
-        # This ensures we get updated/additional context for each iteration
-        # Always perform RAG search for comprehensive context
-        if verbose:
-            print("🌐 Performing comprehensive RAG search...")
-
-        context = self._perform_rag_search(current_article, verbose=verbose)
+        # Determine context based on recreate_ctx flag
+        if self.recreate_ctx:
+            # Perform fresh RAG search for improvement context
+            context = self._perform_rag_search(current_article, verbose=verbose)
+            if verbose:
+                self.verbose_manager.print_context_reuse(len(context), True)
+        else:
+            # Reuse context from the first version
+            if self.versions and len(self.versions) > 0:
+                context = self.versions[0].context
+                if verbose:
+                    self.verbose_manager.print_context_reuse(len(context), False)
+            else:
+                # Fallback if no versions exist yet
+                if verbose:
+                    print("⚠️ No initial context available, performing fresh search...")
+                context = self._perform_rag_search(current_article, verbose=verbose)
 
         if verbose and context:
-            print(f"📚 Using context: {len(context)}")
+            print(f"📚 Using context: {len(context)} characters")
 
-        # Prepare improvement inputs
+        # Prepare improvement inputs using judge's guidance
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
         word_count_guidance = self.word_count_manager.get_length_optimization_prompt(
-            self.word_count_manager.count_words(current_article), score_results
+            judgement.word_count
         )
 
         try:
@@ -643,39 +657,42 @@ class LinkedInArticleGenerator:
                 "current_article": current_article,
                 "original_draft": self._get_original_draft(),
                 "context": context_str,
-                "feedback": improvement_analysis["detailed_feedback"],
+                "feedback": judgement.improvement_prompt,
                 "criteria": scoring_criteria,
                 "guidance": word_count_guidance,
-                "focus": improvement_analysis["focus_summary"],
+                "focus": judgement.focus_areas,
             }
 
             try:
                 self.context_manager.validate_content(content_parts)
             except ContextWindowError as e:
-                print(f"⚠️ Context window validation failed for improvement: {e}")
+                if verbose:
+                    print(f"⚠️ Context window validation failed for improvement: {e}")
                 # Reduce context size and retry
-                combined_context = {}
                 context_str = ""
                 content_parts["context"] = ""
                 self.context_manager.validate_content(content_parts)
 
-            # Generate improved article with comprehensive RAG context
+            # Generate improved article using judge's improvement prompt
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.improver(
                     current_article=current_article,
                     original_draft=self._get_original_draft(),
                     context=context,
-                    score_feedback=improvement_analysis["detailed_feedback"],
+                    score_feedback=judgement.improvement_prompt,
                     scoring_criteria=scoring_criteria,
                     word_count_guidance=word_count_guidance,
-                    improvement_focus=improvement_analysis["focus_summary"],
+                    improvement_focus=judgement.focus_areas,
                 )
 
-            return result.improved_article
+            return result.improved_article, context
 
         except Exception as e:
-            print(f"⚠️ Improvement generation failed, returning current article: {e}")
-            return current_article
+            if verbose:
+                print(
+                    f"⚠️ Improvement generation failed, returning current article: {e}"
+                )
+            return current_article, context or ""
 
     def _get_original_draft(self) -> str:
         """Get the original draft for reference during improvements."""
@@ -690,66 +707,30 @@ class LinkedInArticleGenerator:
         final_version = self.versions[-1]
 
         initial_score = (
-            initial_version.score_results.percentage
-            if initial_version.score_results
-            else 0
+            initial_version.judgement.percentage if initial_version.judgement else 0
         )
         final_score = (
-            final_version.score_results.percentage if final_version.score_results else 0
+            final_version.judgement.percentage if final_version.judgement else 0
         )
 
-        word_count_change = final_version.word_count - initial_version.word_count
+        word_count_change = (
+            final_version.judgement.word_count - initial_version.judgement.word_count
+        )
 
         return {
             "initial_score": initial_score,
             "final_score": final_score,
             "score_improvement": final_score - initial_score,
-            "initial_word_count": initial_version.word_count,
-            "final_word_count": final_version.word_count,
+            "initial_word_count": initial_version.judgement.word_count,
+            "final_word_count": final_version.judgement.word_count,
             "word_count_change": word_count_change,
             "versions_created": len(self.versions),
             "target_achieved": final_score >= self.target_score_percentage,
         }
 
     def _print_final_summary(self, final_result: Dict[str, Any]):
-        """Print a comprehensive final summary."""
-        print("\n" + "=" * 60)
-        print("🏆 FINAL RESULTS")
-        print("=" * 60)
-
-        final_score = final_result["final_score"]
-        improvement_summary = final_result["improvement_summary"]
-
-        print(
-            f"📊 Final Score: {final_score.total_score}/{self.criteria_extractor.get_total_possible_score()} ({final_score.percentage:.1f}%)"
-        )
-        print(f"🎯 Target: ≥{self.target_score_percentage}%")
-        print(
-            f"✅ Target Achieved: {'YES' if final_result['target_achieved'] else 'NO'}"
-        )
-        print(
-            f"🔄 Iterations Used: {final_result['iterations_used']}/{self.max_iterations}"
-        )
-        print(f"📝 Final Word Count: {final_result['word_count']} words")
-
-        if len(self.versions) > 1:
-            print(
-                f"📈 Score Improvement: +{improvement_summary['score_improvement']:.1f}%"
-            )
-            print(
-                f"📏 Word Count Change: {improvement_summary['word_count_change']:+d} words"
-            )
-
-        print("\n📋 GENERATION LOG:")
-        for log_entry in self.generation_log:
-            print(f"  • {log_entry}")
-
-        if final_result["target_achieved"]:
-            print("\n🎉 CONGRATULATIONS! Your article has achieved world-class status!")
-        else:
-            print(
-                f"\n💡 Continue improving to reach the {self.target_score_percentage}% target."
-            )
+        """Print a comprehensive final summary using VerboseManager."""
+        self.verbose_manager.print_final_summary(final_result)
 
     def get_version_history(self) -> List[Dict[str, Any]]:
         """Get a summary of all article versions."""
@@ -758,20 +739,16 @@ class LinkedInArticleGenerator:
         for version in self.versions:
             version_info = {
                 "version": version.version,
-                "word_count": version.word_count,
+                "word_count": version.judgement.word_count,
                 "timestamp": version.timestamp,
-                "improvement_feedback": version.improvement_feedback,
+                "improvement_feedback": version.judgement.improvement_prompt,
             }
 
-            if version.score_results:
+            if version.judgement:
                 version_info.update(
                     {
-                        "score": version.score_results.total_score,
-                        "percentage": version.score_results.percentage,
-                        "category_scores": {
-                            category: sum(r.score for r in results)
-                            for category, results in version.score_results.category_scores.items()
-                        },
+                        "score": version.judgement.total_score,
+                        "percentage": version.judgement.percentage,
                     }
                 )
 
@@ -787,17 +764,16 @@ class LinkedInArticleGenerator:
         export_data = {
             "target_score_percentage": self.target_score_percentage,
             "final_achieved": (
-                self.versions[-1].score_results.percentage
-                >= self.target_score_percentage
-                if self.versions[-1].score_results
+                self.versions[-1].judgement.percentage >= self.target_score_percentage
+                if self.versions[-1].judgement
                 else False
             ),
             "generation_log": self.generation_log,
             "version_history": self.get_version_history(),
             "final_article": self.versions[-1].content,
             "final_score_details": (
-                self.versions[-1].score_results.model_dump()
-                if self.versions[-1].score_results
+                self.versions[-1].judgement.model_dump()
+                if self.versions[-1].judgement
                 else None
             ),
         }

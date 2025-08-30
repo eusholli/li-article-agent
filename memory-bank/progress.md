@@ -4,7 +4,19 @@
 
 ### ✅ Completed (Current Session)
 
-#### Fast RAG Implementation ✅ LATEST MAJOR FEATURE
+#### RAG Context Management ✅ LATEST MAJOR FEATURE
+- **User-Controlled Context Strategy:** New --recreate-ctx command line flag for RAG context management
+- **Performance vs. Freshness Trade-off:** Users choose between context consistency (False) or fresh context (True)
+- **Smart Initial Generation:** Always generates fresh context for first article version to ensure quality baseline
+- **Conditional Regeneration:** Subsequent iterations reuse initial context or generate fresh based on user preference
+- **Complete Version Tracking:** Each ArticleVersion stores both the context used and the recreate_ctx setting
+- **Memory and Cost Optimization:** Context reuse eliminates expensive RAG searches after initial generation
+- **Transparent Operation:** Full visibility into which context was used for each article version
+- **Robust Fallback Handling:** Graceful degradation when context reuse fails
+- **Type-Safe Implementation:** All method signatures properly updated for tuple returns and context flow
+- **Integration with Existing Systems:** Seamlessly works with Fast RAG and Context Window Management
+
+#### Fast RAG Implementation ✅ PREVIOUS MAJOR FEATURE
 - **Complete RAG System Overhaul:** New rag_fast.py replaces previous RAG implementation
 - **Fully Async Architecture:** All operations use asyncio for maximum throughput and concurrency
 - **LLM-Free Content Processing:** Eliminates expensive API calls during text cleaning and filtering

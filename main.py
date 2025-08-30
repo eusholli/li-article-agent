@@ -173,7 +173,7 @@ Target Scores:
         "-i",
         type=int,
         default=10,
-        help="Maximum number of improvement iterations (default: 10)",
+        help="Maximum number of improvement iterations (default: 10, minimum: 1)",
     )
     parser.add_argument(
         "--word-count-min",
@@ -214,10 +214,21 @@ Target Scores:
     )
     parser.add_argument("--export-results", help="Export detailed results to JSON file")
     parser.add_argument(
+        "--recreate-ctx",
+        action="store_true",
+        default=False,
+        help="Regenerate RAG context for each article version (default: False - reuse initial context)",
+    )
+    parser.add_argument(
         "--quiet", "-q", action="store_true", help="Suppress progress messages"
     )
 
     args = parser.parse_args()
+
+    # Validate max_iterations is at least 1
+    if args.max_iterations < 1:
+        print("❌ Error: max-iterations must be at least 1")
+        sys.exit(1)
 
     try:
         # Resolve all models using cascading fallback logic
@@ -310,6 +321,7 @@ The future will likely be hybrid, combining the best of both worlds.
             word_count_min=args.word_count_min,
             word_count_max=args.word_count_max,
             models=models,
+            recreate_ctx=args.recreate_ctx,
         )
 
         if not args.quiet:

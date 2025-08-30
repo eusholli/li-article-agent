@@ -20,13 +20,14 @@ Usage:
 
 import argparse
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import dspy
 from pydantic import BaseModel, Field, validator
 from attachments.dspy import Attachments
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
+from models import ArticleVersion, JudgementModel
 import logging
 
 
@@ -737,6 +738,398 @@ class LinkedInArticleScorer(dspy.Module):
         return dspy.Prediction(output=score_model)
 
 
+class ComprehensiveLinkedInArticleJudge(dspy.Module):
+    """
+    🎯 COMPREHENSIVE LINKEDIN ARTICLE JUDGE - Complete Judging with Analysis
+
+    This judge encapsulates all judging logic including scoring, requirements checking,
+    and improvement analysis. It returns a complete JudgementModel with ready-to-use
+    improvement prompts, providing clean separation of concerns.
+
+    Key Benefits:
+    - Encapsulates all improvement analysis logic
+    - Configuration-driven decision making
+    - Ready-to-use improvement prompts
+    - Clean interface for generator integration
+    - Supports different judge implementations
+    """
+
+    def __init__(
+        self,
+        models: Dict[str, DspyModelConfig],
+        min_length: int,
+        max_length: int,
+        passing_score_percentage: float,
+    ):
+        """
+        Initialize the Comprehensive LinkedIn Article Judge.
+
+        Args:
+            models: Dictionary of model configurations for different components
+            min_length: Minimum acceptable word count
+            max_length: Maximum acceptable word count
+            passing_score_percentage: Minimum percentage score to pass
+        """
+        super().__init__()
+
+        self.models = models
+        self.min_length = min_length
+        self.max_length = max_length
+        self.passing_score_percentage = passing_score_percentage
+
+        # Initialize the underlying fast scorer
+        self.scorer = FastLinkedInArticleScorer(models)
+
+        # Import dependencies for analysis
+        from criteria_extractor import CriteriaExtractor
+        from word_count_manager import WordCountManager
+
+        self.criteria_extractor = CriteriaExtractor()
+        self.word_count_manager = WordCountManager(min_length, max_length)
+
+    def forward(self, article_versions: List[ArticleVersion]) -> dspy.Prediction:
+        """
+        Judge an article and return complete judgement with improvement guidance.
+
+        Args:
+            versions: List of ArticleVersion objects
+
+        Returns:
+            dspy.Prediction object containing JudgementModel as output field
+        """
+        # Get the latest article version
+        latest_version = article_versions[-1]
+        article_text = latest_version.content
+        # Get scoring results from the fast scorer
+        score_prediction = self.scorer(article_text)
+        score_results = score_prediction.output
+
+        # Count words and check length requirements
+        word_count = self.word_count_manager.count_words(article_text)
+        length_status = self.word_count_manager.get_word_count_status(word_count)
+
+        # Check if both targets are achieved
+        quality_achieved = score_results.percentage >= self.passing_score_percentage
+        length_achieved = length_status["within_range"]
+        meets_requirements = quality_achieved and length_achieved
+
+        # Generate improvement analysis if needed
+        if meets_requirements:
+            improvement_prompt = (
+                "Article meets all requirements. No improvements needed."
+            )
+            focus_areas = "None - targets achieved"
+        else:
+            improvement_analysis = self._analyze_improvement_needs(
+                score_results, article_text, word_count
+            )
+            improvement_prompt = improvement_analysis["detailed_feedback"]
+            focus_areas = improvement_analysis["focus_summary"]
+
+        # Create the judgement model
+        judgement = JudgementModel(
+            total_score=score_results.total_score,
+            max_score=score_results.max_score,
+            percentage=score_results.percentage,
+            performance_tier=score_results.performance_tier,
+            word_count=word_count,
+            meets_requirements=meets_requirements,
+            improvement_prompt=improvement_prompt,
+            focus_areas=focus_areas,
+            overall_feedback=score_results.overall_feedback,
+        )
+
+        return dspy.Prediction(output=judgement)
+
+    def _analyze_improvement_needs(
+        self, score_results: ArticleScoreModel, current_article: str, word_count: int
+    ) -> Dict[str, Any]:
+        """Analyze what improvements are needed based on scoring results."""
+
+        # Get improvement guidelines from criteria extractor
+        improvement_guidelines = self.criteria_extractor.get_improvement_guidelines(
+            score_results
+        )
+
+        # Get gap analysis
+        gap_analysis = self.criteria_extractor.analyze_score_gaps(
+            score_results, self.passing_score_percentage
+        )
+
+        # Get word count analysis
+        length_analysis = self.word_count_manager.analyze_length_vs_quality_tradeoffs(
+            word_count, score_results.percentage
+        )
+
+        # Determine focus areas
+        priority_categories = gap_analysis["priority_categories"][
+            :3
+        ]  # Top 3 priority areas
+        focus_areas = [cat["category"] for cat in priority_categories]
+
+        focus_summary = (
+            ", ".join(focus_areas) if focus_areas else "General quality improvements"
+        )
+
+        # Generate detailed feedback
+        detailed_feedback = self._generate_detailed_feedback(
+            score_results,
+            gap_analysis,
+            length_analysis,
+            improvement_guidelines,
+            word_count,
+        )
+
+        return {
+            "score_results": score_results,
+            "gap_analysis": gap_analysis,
+            "length_analysis": length_analysis,
+            "focus_areas": focus_areas,
+            "focus_summary": focus_summary,
+            "detailed_feedback": detailed_feedback,
+            "improvement_guidelines": improvement_guidelines,
+        }
+
+    def _generate_detailed_feedback(
+        self,
+        score_results: ArticleScoreModel,
+        gap_analysis: Dict[str, Any],
+        length_analysis: Dict[str, Any],
+        improvement_guidelines: str,
+        word_count: int,
+    ) -> str:
+        """Generate comprehensive feedback for improvement prioritized by scoring results."""
+
+        feedback_parts = []
+
+        # Current performance summary
+        feedback_parts.append("CURRENT PERFORMANCE ANALYSIS:")
+        feedback_parts.append(
+            f"Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({score_results.percentage:.1f}%)"
+        )
+        feedback_parts.append(f"Gap to target: {gap_analysis['total_gap']} points")
+        feedback_parts.append("")
+
+        # Priority improvement areas based on scoring gaps
+        if gap_analysis["priority_categories"]:
+            feedback_parts.append("🎯 TOP PRIORITY IMPROVEMENTS (Ordered by Impact):")
+            for i, cat_info in enumerate(gap_analysis["priority_categories"][:3], 1):
+                category = cat_info["category"]
+                gap = cat_info["gap"]
+                weight = cat_info["weight"]
+                potential_gain = cat_info.get("potential_gain", gap)
+                feedback_parts.append(
+                    f"{i}. {category}: +{gap} points needed (weight: {weight}, potential gain: +{potential_gain})"
+                )
+            feedback_parts.append("")
+
+        # Detailed word count strategy with category-specific guidance
+        # Use the actual word count passed to this method
+        length_status = self.word_count_manager.get_word_count_status(word_count)
+
+        feedback_parts.append("📝 WORD COUNT STRATEGY WITH CATEGORY-SPECIFIC GUIDANCE:")
+        feedback_parts.append(
+            f"Current: {word_count} words | Target: {self.min_length}-{self.max_length} words"
+        )
+        feedback_parts.append(
+            f"Within Range: {length_status['within_range']} | Strategy: {length_analysis['strategy']}"
+        )
+        feedback_parts.append("")
+
+        # Generate category-specific expansion/reduction recommendations
+        priority_categories = [
+            cat["category"] for cat in gap_analysis["priority_categories"][:3]
+        ]
+
+        if word_count < self.min_length:
+            feedback_parts.append(
+                "🔍 EXPANSION RECOMMENDATIONS (Prioritized by Scoring Gaps):"
+            )
+            words_needed = self.min_length - word_count
+            feedback_parts.append(
+                f"Need +{words_needed} words minimum. Focus expansion on:"
+            )
+
+            for i, category in enumerate(priority_categories, 1):
+                category_score = sum(
+                    r.score for r in score_results.category_scores[category]
+                )
+                category_max = sum(
+                    SCORING_CRITERIA[category][j].get("points", 5)
+                    for j in range(len(score_results.category_scores[category]))
+                )
+                category_percentage = (
+                    (category_score / category_max) * 100 if category_max > 0 else 0
+                )
+
+                # Suggest word allocation based on category priority and current performance
+                if category_percentage < 70:  # Low performing category
+                    suggested_words = max(
+                        100, words_needed // (len(priority_categories) - i + 1)
+                    )
+                    feedback_parts.append(
+                        f"  {i}. {category} (+{suggested_words} words): Low performance ({category_percentage:.1f}%)"
+                    )
+                    feedback_parts.append(
+                        f"     Focus: Add detailed examples, deeper analysis, specific evidence"
+                    )
+                elif category_percentage < 85:  # Medium performing category
+                    suggested_words = max(
+                        50, words_needed // (len(priority_categories) * 2)
+                    )
+                    feedback_parts.append(
+                        f"  {i}. {category} (+{suggested_words} words): Moderate performance ({category_percentage:.1f}%)"
+                    )
+                    feedback_parts.append(
+                        f"     Focus: Strengthen weak criteria, add supporting details"
+                    )
+
+        elif word_count > self.max_length:
+            feedback_parts.append(
+                "✂️ REDUCTION RECOMMENDATIONS (Preserve High-Scoring Content):"
+            )
+            words_to_cut = word_count - self.max_length
+            feedback_parts.append(
+                f"Need -{words_to_cut} words. Reduce from lowest-performing areas:"
+            )
+
+            # Sort categories by performance (lowest first for reduction)
+            category_performance = []
+            for (
+                category_name,
+                category_results,
+            ) in score_results.category_scores.items():
+                category_score = sum(r.score for r in category_results)
+                category_max = sum(
+                    SCORING_CRITERIA[category_name][j].get("points", 5)
+                    for j in range(len(category_results))
+                )
+                category_percentage = (
+                    (category_score / category_max) * 100 if category_max > 0 else 0
+                )
+                category_performance.append(
+                    (category_name, category_percentage, category_score)
+                )
+
+            category_performance.sort(
+                key=lambda x: x[1]
+            )  # Sort by percentage (lowest first)
+
+            for i, (category, percentage, score) in enumerate(category_performance[:3]):
+                suggested_reduction = max(20, words_to_cut // 3)
+                feedback_parts.append(
+                    f"  {i+1}. {category} (-{suggested_reduction} words): {percentage:.1f}% performance"
+                )
+                feedback_parts.append(
+                    f"     Focus: Remove redundancy, tighten weak arguments, eliminate filler"
+                )
+
+        feedback_parts.append("")
+
+        # Detailed category-specific feedback prioritized by scoring gaps
+        feedback_parts.append(
+            "🔍 DETAILED IMPROVEMENT FEEDBACK (Prioritized by Scoring Impact):"
+        )
+        feedback_parts.append("-" * 60)
+
+        # Process categories in priority order first, then remaining categories
+        processed_categories = set()
+
+        # First, process priority categories
+        for cat_info in gap_analysis["priority_categories"][:3]:
+            category_name = cat_info["category"]
+            if category_name in score_results.category_scores:
+                self._add_category_feedback(
+                    feedback_parts,
+                    category_name,
+                    score_results.category_scores[category_name],
+                    priority=True,
+                )
+                processed_categories.add(category_name)
+
+        # Then process remaining categories
+        for category_name, category_results in score_results.category_scores.items():
+            if category_name not in processed_categories:
+                self._add_category_feedback(
+                    feedback_parts, category_name, category_results, priority=False
+                )
+
+        # Strategic improvement guidelines
+        feedback_parts.append("🎯 STRATEGIC IMPROVEMENT GUIDELINES:")
+        feedback_parts.append(improvement_guidelines)
+
+        return "\n".join(feedback_parts)
+
+    def _add_category_feedback(
+        self,
+        feedback_parts: List[str],
+        category_name: str,
+        category_results: List,
+        priority: bool = False,
+    ):
+        """Add category-specific feedback to the improvement prompt."""
+
+        # Calculate category score and percentage
+        category_score = sum(r.score for r in category_results)
+        category_max = sum(
+            SCORING_CRITERIA[category_name][i].get("points", 5)
+            for i in range(len(category_results))
+        )
+        category_percentage = (
+            (category_score / category_max) * 100 if category_max > 0 else 0
+        )
+
+        priority_indicator = "🔥 PRIORITY: " if priority else ""
+        feedback_parts.append(
+            f"\n{priority_indicator}📁 {category_name} ({category_score}/{category_max} - {category_percentage:.1f}%):"
+        )
+
+        # Include suggestions from low-scoring criteria in this category
+        has_improvements = False
+        for result in category_results:
+            # Extract criterion points from the original criteria
+            criterion_index = None
+            for i, criterion in enumerate(SCORING_CRITERIA[category_name]):
+                if criterion["question"] in result.criterion:
+                    criterion_index = i
+                    break
+
+            if criterion_index is not None:
+                criterion_points = SCORING_CRITERIA[category_name][criterion_index].get(
+                    "points", 5
+                )
+                # Calculate raw score (1-5) from weighted score
+                raw_score = (
+                    (result.score * 5) // criterion_points
+                    if criterion_points > 0
+                    else 3
+                )
+
+                # Include feedback for criteria scoring 3 or below (needs improvement)
+                # For priority categories, also include score 4 criteria
+                threshold = 4 if priority else 3
+                if raw_score <= threshold:
+                    has_improvements = True
+                    urgency = (
+                        "🚨 CRITICAL"
+                        if raw_score <= 2
+                        else "⚠️ NEEDS WORK" if raw_score <= 3 else "💡 ENHANCE"
+                    )
+                    feedback_parts.append(f"  {urgency}: {result.criterion}")
+                    feedback_parts.append(
+                        f"    Current: {result.score}/{criterion_points} points (raw score: {raw_score}/5)"
+                    )
+                    feedback_parts.append(f"    Issue: {result.reasoning}")
+                    feedback_parts.append(f"    Action: {result.suggestions}")
+                    feedback_parts.append("")
+
+        if not has_improvements:
+            feedback_parts.append(
+                "  ✅ This category is performing well - maintain current approach"
+            )
+            feedback_parts.append("")
+
+
 class FastLinkedInArticleScorer(dspy.Module):
     """
     🚀 FAST LINKEDIN ARTICLE SCORER - Single LLM Call Implementation
@@ -958,12 +1351,12 @@ class FastLinkedInArticleScorer(dspy.Module):
 # ==========================================================================
 
 
-def print_score_report(score: ArticleScoreModel) -> None:
+def print_score_report(score) -> None:
     """
     Print a formatted report of the article scoring results.
 
     Args:
-        score: The ArticleScoreModel object to format and print
+        score: The scoring model object (JudgementModel or ArticleScoreModel)
     """
     print("\n" + "=" * 80)
     print("📋 LINKEDIN ARTICLE QUALITY SCORE REPORT")
@@ -974,53 +1367,57 @@ def print_score_report(score: ArticleScoreModel) -> None:
     print(f"🏆 Performance Tier: {score.performance_tier}")
 
     # Display word count if available
-    if score.word_count is not None:
+    if hasattr(score, 'word_count') and score.word_count is not None:
         print(f"📝 Word Count: {score.word_count} words")
     print()
 
-    print("📊 CATEGORY BREAKDOWN:")
-    print("-" * 40)
-    for category, results in score.category_scores.items():
-        category_score = sum(r.score for r in results)
-        # Calculate category max based on actual point values
-        category_max = sum(
-            SCORING_CRITERIA[category][i].get("points", 5) for i in range(len(results))
-        )
-        print(f"📁 {category}: {category_score}/{category_max}")
+    # Check if this is the old ArticleScoreModel with category_scores
+    if hasattr(score, 'category_scores'):
+        print("📊 CATEGORY BREAKDOWN:")
+        print("-" * 40)
+        for category, results in score.category_scores.items():
+            category_score = sum(r.score for r in results)
+            # Calculate category max based on actual point values
+            category_max = sum(
+                SCORING_CRITERIA[category][i].get("points", 5) for i in range(len(results))
+            )
+            print(f"📁 {category}: {category_score}/{category_max}")
 
-        for i, result in enumerate(results):
-            criterion_points = SCORING_CRITERIA[category][i].get("points", 5)
-            print(f"  • {result.criterion}")
-            print(f"    Score: {result.score}/{criterion_points}")
-            print(f"    Reasoning: {result.reasoning}")
-            if result.suggestions:
-                print(f"    💡 Suggestions: {result.suggestions}")
-            print()
+            for i, result in enumerate(results):
+                criterion_points = SCORING_CRITERIA[category][i].get("points", 5)
+                print(f"  • {result.criterion}")
+                print(f"    Score: {result.score}/{criterion_points}")
+                print(f"    Reasoning: {result.reasoning}")
+                if result.suggestions:
+                    print(f"    💡 Suggestions: {result.suggestions}")
+                print()
+    else:
+        # For simplified JudgementModel, show basic category breakdown
+        print("📊 CATEGORY SUMMARY:")
+        print("-" * 40)
+        total_possible = 180  # Known total from criteria
+        for category_name, criteria in SCORING_CRITERIA.items():
+            category_max = sum(c.get("points", 5) for c in criteria)
+            # Estimate category score proportionally
+            estimated_score = int((score.total_score / total_possible) * category_max)
+            print(f"📁 {category_name}: ~{estimated_score}/{category_max}")
+        print()
 
-    print("💬 OVERALL FEEDBACK:")
-    print("-" * 40)
-    print(score.overall_feedback)
-    print()
-    print("\n" + "=" * 80)
-    print("📋 REPEAT ARTICLE QUALITY SCORE REPORT")
+    # Display overall feedback if available
+    if hasattr(score, 'overall_feedback') and score.overall_feedback:
+        print("💬 OVERALL FEEDBACK:")
+        print("-" * 40)
+        print(score.overall_feedback)
+        print()
+
+    # Display improvement guidance if available (JudgementModel specific)
+    if hasattr(score, 'improvement_prompt') and score.improvement_prompt:
+        print("🔍 IMPROVEMENT GUIDANCE:")
+        print("-" * 40)
+        print(score.improvement_prompt)
+        print()
+
     print("=" * 80)
-    print(
-        f"🎯 Overall Score: {score.total_score}/{score.max_score} ({score.percentage:.1f}%)"
-    )
-
-    print("📊 CATEGORY SUMMARY:")
-    print("-" * 40)
-    for category, results in score.category_scores.items():
-        category_score = sum(r.score for r in results)
-        # Calculate category max based on actual point values
-        category_max = sum(
-            SCORING_CRITERIA[category][i].get("points", 5) for i in range(len(results))
-        )
-        print(f"📁 {category}: {category_score}/{category_max}")
-    print()
-
-    print(f"🏆 Performance Tier: {score.performance_tier}")
-    print()
 
 
 # ==========================================================================

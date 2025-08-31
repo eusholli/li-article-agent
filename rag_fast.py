@@ -9,7 +9,9 @@ Lean, fast web RAG retriever using Tavily + simple packing.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Iterable, List, Tuple
 from tavily import AsyncTavilyClient  # pip install tavily-python
@@ -59,6 +61,7 @@ class TavilySettings:
     extract_format: str = "markdown"  # "markdown" | "text"
     extract_depth: str = "basic"  # "basic" | "advanced"
     concurrent_requests: int = 8  # client-side concurrency
+    cache_file: str = "tavily_cache.json"  # persistent cache file
 
 
 class TopicExtractionResult(BaseModel):
@@ -108,9 +111,38 @@ class TavilyWebRetriever:
         self.client = AsyncTavilyClient(self.settings.api_key)
         self._sem = asyncio.Semaphore(self.settings.concurrent_requests)
 
+        # Initialize persistent cache
+        self.cache = {"searches": {}, "extractions": {}}
+        self._load_cache()
+
+    def _load_cache(self):
+        """Load cache from file if it exists."""
+        try:
+            if os.path.exists(self.settings.cache_file):
+                with open(self.settings.cache_file, "r", encoding="utf-8") as f:
+                    self.cache = json.load(f)
+                logging.info(f"Loaded cache from {self.settings.cache_file}")
+        except Exception as e:
+            logging.warning(f"Failed to load cache: {e}")
+            self.cache = {"searches": {}, "extractions": {}}
+
+    def _save_cache(self):
+        """Save cache to file."""
+        try:
+            with open(self.settings.cache_file, "w", encoding="utf-8") as f:
+                json.dump(self.cache, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logging.warning(f"Failed to save cache: {e}")
+
     async def _asearch(self, query: str) -> dict:
+        # Check cache first
+        if query in self.cache["searches"]:
+            logging.info(f"Cache hit for search query: {query}")
+            return self.cache["searches"][query]["response"]
+
+        # Cache miss - make API call
         async with self._sem:
-            return await self.client.search(
+            response = await self.client.search(
                 query=query,
                 search_depth=self.settings.search_depth,
                 max_results=self.settings.max_results,
@@ -123,15 +155,57 @@ class TavilyWebRetriever:
                 timeout=self.settings.timeout,
             )
 
+        # Cache the response
+        self.cache["searches"][query] = {"timestamp": time.time(), "response": response}
+        self._save_cache()
+        logging.info(f"Cached search result for query: {query}")
+
+        return response
+
     async def _aextract(self, urls: List[str]) -> dict:
-        # Tavily extract supports up to 20 URLs per call
-        async with self._sem:
-            return await self.client.extract(
-                urls=urls[:20],
-                format=self.settings.extract_format,
-                extract_depth=self.settings.extract_depth,
-                timeout=self.settings.timeout,
-            )
+        # Check cache for each URL
+        cached_results = []
+        urls_to_fetch = []
+
+        for url in urls[:20]:  # Respect Tavily's 20 URL limit
+            if url in self.cache["extractions"]:
+                logging.info(f"Cache hit for extraction URL: {url}")
+                cached_results.append(self.cache["extractions"][url])
+            else:
+                urls_to_fetch.append(url)
+
+        # Make API call only for uncached URLs
+        if urls_to_fetch:
+            async with self._sem:
+                response = await self.client.extract(
+                    urls=urls_to_fetch,
+                    format=self.settings.extract_format,
+                    extract_depth=self.settings.extract_depth,
+                    timeout=self.settings.timeout,
+                )
+
+            # Cache individual URL results
+            if "results" in response:
+                for item in response["results"]:
+                    url = item.get("url")
+                    if url:
+                        self.cache["extractions"][url] = {
+                            "timestamp": time.time(),
+                            "content": item.get("raw_content", ""),
+                            "url": url,
+                        }
+                        logging.info(f"Cached extraction result for URL: {url}")
+
+            # Save cache after API call
+            self._save_cache()
+
+            # Combine cached and fresh results
+            all_results = cached_results + response.get("results", [])
+        else:
+            # All results were cached
+            all_results = cached_results
+
+        return {"results": all_results}
 
     async def search_and_extract(
         self, queries: List[str]
@@ -167,7 +241,7 @@ class TavilyWebRetriever:
                 continue
             for item in resp.get("results", []):
                 url = item.get("url")
-                raw = item.get("raw_content") or ""
+                raw = item.get("content") or ""
                 if url and raw and len(raw) > 200:  # guard against tiny pages
                     passages.append(raw)
                     ordered_urls.append(url)
@@ -347,6 +421,7 @@ async def retrieve_and_pack(
         context_manager = ContextWindowManager(models["generator"])
         max_total_chars = context_manager.get_rag_limit()
         max_rag_tokens = context_manager.chars_to_tokens(max_total_chars)
+        max_rag_tokens_per_doc = max_rag_tokens // k
         print(
             f"🧠 Using centralized RAG limit: {max_total_chars:,} chars (35% allocation)"
         )
@@ -384,6 +459,7 @@ async def retrieve_and_pack(
         target_model=model_name,
         max_input_tokens=max_rag_tokens,
         reserve_for_prompt_and_answer=0,
+        max_per_doc_tokens=max_rag_tokens_per_doc,
     )
 
     retriever = TavilyWebRetriever(tavily)

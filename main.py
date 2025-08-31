@@ -20,7 +20,7 @@ from pathlib import Path
 
 from linkedin_article_generator import LinkedInArticleGenerator
 from dspy_factory import get_openrouter_model, DspyModelConfig
-from li_article_judge import print_score_report
+from li_judge_simple import print_score_report
 from datetime import datetime
 from typing import Dict, Any
 
@@ -222,6 +222,12 @@ Target Scores:
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="Suppress progress messages"
     )
+    parser.add_argument(
+        "--auto",
+        "-a",
+        action="store_true",
+        help="Run in automatic mode without user interaction (default: False)",
+    )
 
     args = parser.parse_args()
 
@@ -322,6 +328,7 @@ The future will likely be hybrid, combining the best of both worlds.
             word_count_max=args.word_count_max,
             models=models,
             recreate_ctx=args.recreate_ctx,
+            auto=args.auto,
         )
 
         if not args.quiet:

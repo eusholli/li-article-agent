@@ -1367,19 +1367,20 @@ def print_score_report(score) -> None:
     print(f"🏆 Performance Tier: {score.performance_tier}")
 
     # Display word count if available
-    if hasattr(score, 'word_count') and score.word_count is not None:
+    if hasattr(score, "word_count") and score.word_count is not None:
         print(f"📝 Word Count: {score.word_count} words")
     print()
 
     # Check if this is the old ArticleScoreModel with category_scores
-    if hasattr(score, 'category_scores'):
+    if hasattr(score, "category_scores"):
         print("📊 CATEGORY BREAKDOWN:")
         print("-" * 40)
         for category, results in score.category_scores.items():
             category_score = sum(r.score for r in results)
             # Calculate category max based on actual point values
             category_max = sum(
-                SCORING_CRITERIA[category][i].get("points", 5) for i in range(len(results))
+                SCORING_CRITERIA[category][i].get("points", 5)
+                for i in range(len(results))
             )
             print(f"📁 {category}: {category_score}/{category_max}")
 
@@ -1404,15 +1405,15 @@ def print_score_report(score) -> None:
         print()
 
     # Display overall feedback if available
-    if hasattr(score, 'overall_feedback') and score.overall_feedback:
+    if hasattr(score, "overall_feedback") and score.overall_feedback:
         print("💬 OVERALL FEEDBACK:")
         print("-" * 40)
         print(score.overall_feedback)
         print()
 
     # Display improvement guidance if available (JudgementModel specific)
-    if hasattr(score, 'improvement_prompt') and score.improvement_prompt:
-        print("🔍 IMPROVEMENT GUIDANCE:")
+    if hasattr(score, "improvement_prompt") and score.improvement_prompt:
+        print("🔍 REMAINING ISSUES:")
         print("-" * 40)
         print(score.improvement_prompt)
         print()

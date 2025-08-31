@@ -14,12 +14,8 @@ import re
 import asyncio
 
 from models import ArticleVersion, JudgementModel
-from li_article_judge import (
-    LinkedInArticleScorer,
-    FastLinkedInArticleScorer,
-    ComprehensiveLinkedInArticleJudge,
-)
-from criteria_extractor import CriteriaExtractor
+from li_judge_simple import ComprehensiveLinkedInArticleJudge
+from li_judge_simple import get_criteria_for_generation
 from word_count_manager import WordCountManager
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
@@ -229,7 +225,7 @@ class LinkedInArticleGenerator:
 
             print("📊 FINAL METRICS:")
             print(
-                f"  • Final Score: {final_score.total_score}/{self.generator.criteria_extractor.get_total_possible_score()} ({final_score.percentage:.1f}%)"
+                f"  • Final Score: {final_score.total_score}/{final_score.max_score} ({final_score.percentage:.1f}%)"
             )
             print(f"  • Target Score: ≥{self.generator.target_score_percentage}%")
             print(
@@ -291,6 +287,7 @@ class LinkedInArticleGenerator:
         word_count_max: int,
         models: Dict[str, DspyModelConfig],
         recreate_ctx: bool = False,
+        auto: bool = False,
     ):
         """
         Initialize the LinkedIn Article Generator.
@@ -323,7 +320,7 @@ class LinkedInArticleGenerator:
             max_length=word_count_max,
             passing_score_percentage=target_score_percentage,
         )
-        self.criteria_extractor = CriteriaExtractor()
+
         self.word_count_manager = WordCountManager(word_count_min, word_count_max)
 
         # Initialize DSPy modules with optional model-specific LM instances
@@ -336,6 +333,7 @@ class LinkedInArticleGenerator:
         self.generation_log: List[str] = []
         self.original_draft: Optional[str] = None
         self.recreate_ctx = recreate_ctx
+        self.auto = auto
 
     def _perform_rag_search(self, draft_text: str, verbose: bool = True) -> str:
         """
@@ -431,19 +429,24 @@ class LinkedInArticleGenerator:
     def _iterative_improvement_process(
         self, initial_article: str, initial_context: str, verbose: bool
     ) -> Dict[str, Any]:
-        """Run the iterative improvement process with combined quality and length validation."""
+        """Run the iterative improvement process with user interaction and combined quality and length validation."""
         current_article = initial_article
         current_context = initial_context
         iteration = 0
+        user_instructions = ""  # Track user-provided instructions
 
         # Ensure at least one iteration runs to get a judgement
         while iteration < max(1, self.max_iterations):
             iteration += 1
 
+            # Print article version before judging
+            if verbose:
+                self._print_article_version_before_judging(current_article, iteration)
+
             # Create a pending judgement for the temporary version
             pending_judgement = JudgementModel(
                 total_score=0,
-                max_score=180,
+                max_score=100,
                 percentage=0.0,
                 performance_tier="Pending",
                 word_count=len(current_article.split()),  # Quick word count estimate
@@ -455,7 +458,7 @@ class LinkedInArticleGenerator:
 
             # Create a temporary version for judging
             temp_version = ArticleVersion(
-                version=iteration + 1,
+                version=iteration,
                 content=current_article,
                 context=current_context,
                 recreate_ctx=self.recreate_ctx,
@@ -468,7 +471,7 @@ class LinkedInArticleGenerator:
 
             # Now create the final version with the actual judgement
             version = ArticleVersion(
-                version=iteration + 1,
+                version=iteration,
                 content=current_article,
                 context=current_context,
                 recreate_ctx=self.recreate_ctx,
@@ -476,28 +479,48 @@ class LinkedInArticleGenerator:
             )
             self.versions.append(version)
 
+            # Print judging results after judging
             if verbose:
-                self.verbose_manager.print_iteration_status(iteration, version)
+                self._print_judging_results_after_judging(version)
 
             self.generation_log.append(
                 f"Version {version.version}: Improved article ({version.judgement.word_count} words, improvement {version.judgement.improvement_prompt})"
             )
 
-            # Check if targets are achieved using the judge's decision
-            if version.judgement.meets_requirements:
-                if verbose:
-                    print(
-                        f"🎉 BOTH TARGETS ACHIEVED! Article reached world-class status with optimal length!"
-                    )
+            if self.auto == False:
+                # In non-auto mode, always print iteration status
+                self.verbose_manager.print_iteration_status(iteration, version)
 
-                self.generation_log.append(
-                    f"Iteration {iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
-                )
-                break
+                user_decision = self._get_user_decision(version)
+                if user_decision == "finish":
+                    break
+                elif user_decision == "continue":
+                    user_instructions = self._get_user_instructions()
+                    # Prepend user instructions to judge's improvement prompt if provided
+                    if user_instructions:
+                        judgement.improvement_prompt = f"""THESE ARE NEW INSTRUCTIONS:
+<NEW>
+{user_instructions}
+<NEW/>
 
+{judgement.improvement_prompt}"""
             else:
-                if verbose:
-                    print(f"⚠️ Targets not yet achieved: {judgement.focus_areas}")
+
+                # Check if targets are achieved using the judge's decision
+                if version.judgement.meets_requirements:
+                    if verbose:
+                        print(
+                            f"🎉 BOTH TARGETS ACHIEVED! Article reached world-class status with optimal length!"
+                        )
+
+                    self.generation_log.append(
+                        f"Iteration {iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
+                    )
+                    break  # Exit loop if both targets are met
+
+                else:
+                    if verbose:
+                        print(f"⚠️ Targets not yet achieved: {judgement.focus_areas}")
 
             # Generate improved version using the judge's improvement prompt
             if verbose:
@@ -570,7 +593,7 @@ class LinkedInArticleGenerator:
             print(f"📚 Using context: {len(final_context)} characters")
 
         # Prepare generation inputs
-        scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
+        scoring_criteria = get_criteria_for_generation()
         word_count_guidance = self.word_count_manager.get_length_optimization_prompt(
             self.word_count_manager.target_optimal
         )
@@ -645,7 +668,7 @@ class LinkedInArticleGenerator:
             print(f"📚 Using context: {len(context)} characters")
 
         # Prepare improvement inputs using judge's guidance
-        scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
+        scoring_criteria = get_criteria_for_generation()
         word_count_guidance = self.word_count_manager.get_length_optimization_prompt(
             judgement.word_count
         )
@@ -697,6 +720,96 @@ class LinkedInArticleGenerator:
     def _get_original_draft(self) -> str:
         """Get the original draft for reference during improvements."""
         return self.original_draft or ""
+
+    def _print_article_version_before_judging(
+        self, article_content: str, version_number: int
+    ):
+        """Print the article version content before sending it to be judged."""
+        print(f"\n📄 ARTICLE VERSION {version_number} - SENDING TO JUDGE")
+        print("=" * 60)
+        print("Article Content:")
+        print("-" * 30)
+        # Print first 500 characters to avoid overwhelming output
+        preview = article_content[:500]
+        print(preview)
+        if len(article_content) > 500:
+            print(f"\n[... {len(article_content) - 500} more characters ...]")
+        print("=" * 60)
+
+    def _print_judging_results_after_judging(self, version: "ArticleVersion"):
+        """Print comprehensive judging results after evaluation."""
+        judgement = version.judgement
+        print(f"\n🎯 JUDGING RESULTS FOR VERSION {version.version}")
+        print("=" * 60)
+        print("📊 SCORES:")
+        print(f"  • Total Score: {judgement.total_score}/{judgement.max_score}")
+        print(f"  • Percentage: {judgement.percentage:.1f}%")
+        print(f"  • Performance Tier: {judgement.performance_tier}")
+        print(f"  • Word Count: {judgement.word_count} words")
+        print(
+            f"  • Meets Requirements: {'✅ YES' if judgement.meets_requirements else '❌ NO'}"
+        )
+
+        if judgement.overall_feedback:
+            print("\n💬 OVERALL FEEDBACK:")
+            print(f"  {judgement.overall_feedback}")
+
+        if judgement.improvement_prompt:
+            print("\n🔧 IMPROVEMENT PROMPT:")
+            print(f"  {judgement.improvement_prompt}")
+
+        if judgement.focus_areas:
+            print("\n🎯 FOCUS AREAS:")
+            print(f"  {judgement.focus_areas}")
+
+        print("=" * 60)
+
+    def _get_user_decision(self, version: "ArticleVersion") -> str:
+        """Ask user whether to continue improving or finish."""
+        print("\n🤔 USER DECISION TIME")
+        print("-" * 30)
+        print(f"Version {version.version} has been evaluated.")
+        print("Choose your next action:")
+        print("  1. finish - Accept this version as final")
+        print("  2. continue - Generate another improved version")
+
+        while True:
+            try:
+                choice = input("Enter your choice (1 or 2): ").strip().lower()
+                if choice in ["1", "finish", "f"]:
+                    return "finish"
+                elif choice in ["2", "continue", "c"]:
+                    return "continue"
+                else:
+                    print("Please enter '1', 'finish', '2', or 'continue'")
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return "finish"
+
+    def _get_user_instructions(self) -> str:
+        """Ask user for new instructions to add to the improvement prompt."""
+        print("\n📝 NEW INSTRUCTIONS")
+        print("-" * 30)
+        print("Enter any specific instructions for improving the next version.")
+        print("These will be added to the beginning of the improvement prompt.")
+        print("(Press Enter with no text to skip)")
+
+        try:
+            instructions = input("Your instructions: ").strip()
+            if instructions:
+                print(
+                    f"\n✅ Instructions added: {instructions[:100]}{'...' if len(instructions) > 100 else ''}"
+                )
+            else:
+                print(
+                    "\n⏭️ No instructions provided - proceeding without additional guidance"
+                )
+            return instructions
+        except KeyboardInterrupt:
+            print(
+                "\n⏭️ Operation cancelled - proceeding without additional instructions"
+            )
+            return ""
 
     def _generate_improvement_summary(self) -> Dict[str, Any]:
         """Generate a summary of the improvement process."""

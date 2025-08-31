@@ -44,8 +44,8 @@ class JudgementModel(BaseModel):
     """
 
     # Core scoring results
-    total_score: int = Field(..., description="Total weighted score achieved")
-    max_score: int = Field(..., description="Maximum possible score (180 points)")
+    total_score: int = Field(..., description="Total score achieved (0-100)")
+    max_score: int = Field(..., description="Maximum possible score (100 points)")
     percentage: float = Field(..., ge=0, le=100, description="Percentage score")
     performance_tier: str = Field(..., description="Performance tier classification")
     word_count: int = Field(..., description="Current word count of the article")

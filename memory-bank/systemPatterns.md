@@ -105,6 +105,16 @@ while not (score >= target_score and word_count_valid):
 - **Mixed Model Workflows:** Combine free and paid models based on operation importance
 - **Budget-Quality Balance:** Optimize for best quality within budget constraints
 
+#### 8. Module-Level Cache Pattern
+- **Shared State Management:** Single cache instance across all component instances
+- **Async Lock Protection:** `asyncio.Lock` prevents concurrent access corruption
+- **Atomic File Operations:** Temp file + rename pattern ensures data integrity
+- **Thread Pool Isolation:** File I/O runs in separate threads to avoid blocking event loop
+- **Lazy Initialization:** Cache loads once when first instance is created
+- **Concurrent Safety:** Multiple coroutines can safely access cache simultaneously
+- **Memory Efficiency:** Single cache instance reduces memory usage
+- **Error Resilience:** Robust error handling with graceful fallbacks
+
 ## Component Relationships
 
 ### Core Modules

@@ -3,6 +3,7 @@
 Lean, fast web RAG retriever using Tavily + simple packing.
 - Fully async
 - No LLM calls during retrieval/cleaning
+- Thread-safe module-level caching with atomic file operations
 - Designed to hand a single, packed context string to your DSPy module
 """
 
@@ -11,9 +12,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass
-from typing import Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from tavily import AsyncTavilyClient  # pip install tavily-python
 from dotenv import load_dotenv
 import os
@@ -23,11 +25,119 @@ from pydantic import BaseModel, Field
 from typing import Dict
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager
+import re
+from typing import Optional
+
 
 logging.basicConfig(level=logging.INFO)
 
 # Load environment variables
 load_dotenv()
+
+# -----------------------------------------------------------------------------
+# Module-level cache with thread-safety
+# -----------------------------------------------------------------------------
+
+# Module-level cache and synchronization
+_cache: Dict[str, Any] = {"searches": {}, "extractions": {}}
+_cache_lock = asyncio.Lock()
+_cache_initialized = False
+
+
+def load_cache(cache_file: str) -> None:
+    """Synchronously load cache from file."""
+    global _cache_initialized, _cache
+    if _cache_initialized:
+        return  # Already loaded
+
+    try:
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                loaded_data = json.load(f)
+                _cache.update(loaded_data)
+            logging.info(f"Loaded cache from {cache_file}")
+    except Exception as e:
+        logging.warning(f"Failed to load cache: {e}")
+        _cache = {"searches": {}, "extractions": {}}  # Reset on error
+
+    _cache_initialized = True
+
+
+def save_cache(cache_file: str) -> None:
+    """Synchronously save cache to file atomically."""
+    try:
+        # Write to temp file first
+        temp_fd, temp_path = tempfile.mkstemp(
+            suffix=".json", dir=os.path.dirname(cache_file)
+        )
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                json.dump(_cache, f, indent=2, ensure_ascii=False)
+            # Atomic rename
+            os.rename(temp_path, cache_file)
+        except Exception:
+            os.unlink(temp_path)
+            raise
+    except Exception as e:
+        logging.warning(f"Failed to save cache: {e}")
+
+
+async def get_cached_search(query: str) -> Optional[dict]:
+    """Async wrapper for cache read."""
+    async with _cache_lock:
+        search_data = _cache["searches"].get(query)
+        return search_data.get("response") if search_data else None
+
+
+async def set_cached_search(query: str, response: dict, cache_file: str) -> None:
+    """Async wrapper for cache write."""
+    async with _cache_lock:
+        _cache["searches"][query] = {"timestamp": time.time(), "response": response}
+        # Run sync save in thread pool to avoid blocking event loop
+        await asyncio.to_thread(save_cache, cache_file)
+
+
+async def get_cached_extraction(url: str) -> Optional[dict]:
+    """Async wrapper for extraction cache read."""
+    async with _cache_lock:
+        return _cache["extractions"].get(url)
+
+
+async def set_cached_extraction(url: str, data: dict, cache_file: str) -> None:
+    """Async wrapper for extraction cache write."""
+    async with _cache_lock:
+        _cache["extractions"][url] = data
+        await asyncio.to_thread(save_cache, cache_file)
+
+
+def check_cached_urls(urls: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    Check which URLs are in the cache and which need to be fetched.
+
+    This function checks the current in-memory cache state.
+    The cache is loaded once when the first TavilyWebRetriever instance is created.
+
+    Args:
+        urls: List of URL strings to check
+
+    Returns:
+        Tuple of (cached_urls, urls_to_fetch)
+        - cached_urls: List of URLs that are already cached
+        - urls_to_fetch: List of URLs that need to be fetched from the API
+    """
+    # Note: This function is synchronous and checks the current in-memory cache.
+    # Cache loading is handled in TavilyWebRetriever.__init__() to ensure
+    # the latest persisted cache is loaded before any operations.
+    cached_urls = []
+    urls_to_fetch = []
+
+    for url in urls:
+        if url in _cache["extractions"]:
+            cached_urls.append(url)
+        else:
+            urls_to_fetch.append(url)
+
+    return cached_urls, urls_to_fetch
 
 
 # -----------------------------------------------------------------------------
@@ -65,7 +175,7 @@ class TavilySettings:
 
 
 class TopicExtractionResult(BaseModel):
-    """Result structure for topic extraction."""
+    """Result structure for topic extraction focused on analytical thinking evaluation."""
 
     main_topic: str = Field(
         ...,
@@ -73,23 +183,23 @@ class TopicExtractionResult(BaseModel):
     )
     search_query: List[str] = Field(
         ...,
-        description="A list of at most 3 optimized search queries to find relevant context for the topic",
+        description="A list of at most 3 optimized search queries to find evidence of fundamental analysis, root cause examination, and deep thinking patterns that help evaluate if the article breaks down complex problems into basic components rather than relying on analogies or surface-level solutions",
     )
     needs_research: bool = Field(
         ...,
-        description="Boolean: whether this topic would benefit from web research context",
+        description="Boolean: whether this topic would benefit from web research context to evaluate analytical depth",
     )
 
 
 class TopicExtractionSignature(dspy.Signature):
-    """Extract the main topic for web search from article draft or outline."""
+    """Extract the main topic and generate search queries to evaluate if the article demonstrates deep analytical thinking."""
 
     draft_or_outline = dspy.InputField(
-        desc="Article draft or outline to analyze for main topic"
+        desc="Article draft or outline to analyze for main topic and analytical approach"
     )
 
     output: TopicExtractionResult = dspy.OutputField(
-        desc="Extracted main topic, search queries, and research needs flag"
+        desc="Extracted main topic, search queries optimized to find evidence of fundamental analysis vs surface-level thinking, and research needs flag"
     )
 
 
@@ -99,6 +209,9 @@ class TavilyWebRetriever:
       1) runs Tavily searches for each query
       2) extracts raw content for each result URL
       3) returns (passages, urls) with basic dedup and quality guards
+
+    Thread-safety: Uses module-level cache with asyncio.Lock for concurrent access.
+    All instances share the same cache and file, ensuring consistency across multiple retrievers.
     """
 
     def __init__(self, settings: TavilySettings | None = None):
@@ -111,34 +224,15 @@ class TavilyWebRetriever:
         self.client = AsyncTavilyClient(self.settings.api_key)
         self._sem = asyncio.Semaphore(self.settings.concurrent_requests)
 
-        # Initialize persistent cache
-        self.cache = {"searches": {}, "extractions": {}}
-        self._load_cache()
-
-    def _load_cache(self):
-        """Load cache from file if it exists."""
-        try:
-            if os.path.exists(self.settings.cache_file):
-                with open(self.settings.cache_file, "r", encoding="utf-8") as f:
-                    self.cache = json.load(f)
-                logging.info(f"Loaded cache from {self.settings.cache_file}")
-        except Exception as e:
-            logging.warning(f"Failed to load cache: {e}")
-            self.cache = {"searches": {}, "extractions": {}}
-
-    def _save_cache(self):
-        """Save cache to file."""
-        try:
-            with open(self.settings.cache_file, "w", encoding="utf-8") as f:
-                json.dump(self.cache, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logging.warning(f"Failed to save cache: {e}")
+        # Load cache once at module level
+        load_cache(self.settings.cache_file)
 
     async def _asearch(self, query: str) -> dict:
         # Check cache first
-        if query in self.cache["searches"]:
+        cached = await get_cached_search(query)
+        if cached:
             logging.info(f"Cache hit for search query: {query}")
-            return self.cache["searches"][query]["response"]
+            return cached
 
         # Cache miss - make API call
         async with self._sem:
@@ -155,24 +249,24 @@ class TavilyWebRetriever:
                 timeout=self.settings.timeout,
             )
 
-        # Cache the response
-        self.cache["searches"][query] = {"timestamp": time.time(), "response": response}
-        self._save_cache()
+        # Update cache
+        await set_cached_search(query, response, self.settings.cache_file)
         logging.info(f"Cached search result for query: {query}")
 
         return response
 
     async def _aextract(self, urls: List[str]) -> dict:
-        # Check cache for each URL
-        cached_results = []
-        urls_to_fetch = []
+        async with _cache_lock:
+            cached_results = []
+            urls_to_fetch = []
 
-        for url in urls[:20]:  # Respect Tavily's 20 URL limit
-            if url in self.cache["extractions"]:
-                logging.info(f"Cache hit for extraction URL: {url}")
-                cached_results.append(self.cache["extractions"][url])
-            else:
-                urls_to_fetch.append(url)
+            for url in urls[:20]:  # Respect Tavily's 20 URL limit
+                cached = _cache["extractions"].get(url)
+                if cached:
+                    logging.info(f"Cache hit for extraction URL: {url}")
+                    cached_results.append(cached)
+                else:
+                    urls_to_fetch.append(url)
 
         # Make API call only for uncached URLs
         if urls_to_fetch:
@@ -184,22 +278,21 @@ class TavilyWebRetriever:
                     timeout=self.settings.timeout,
                 )
 
-            # Cache individual URL results
-            if "results" in response:
-                for item in response["results"]:
-                    url = item.get("url")
-                    if url:
-                        self.cache["extractions"][url] = {
-                            "timestamp": time.time(),
-                            "content": item.get("raw_content", ""),
-                            "url": url,
-                        }
-                        logging.info(f"Cached extraction result for URL: {url}")
+            # Update cache
+            async with _cache_lock:
+                if "results" in response:
+                    for item in response["results"]:
+                        url = item.get("url")
+                        if url:
+                            data = {
+                                "timestamp": time.time(),
+                                "raw_content": item.get("raw_content", ""),
+                                "url": url,
+                            }
+                            _cache["extractions"][url] = data
+                            logging.info(f"Cached extraction result for URL: {url}")
+                await asyncio.to_thread(save_cache, self.settings.cache_file)
 
-            # Save cache after API call
-            self._save_cache()
-
-            # Combine cached and fresh results
             all_results = cached_results + response.get("results", [])
         else:
             # All results were cached
@@ -241,7 +334,7 @@ class TavilyWebRetriever:
                 continue
             for item in resp.get("results", []):
                 url = item.get("url")
-                raw = item.get("content") or ""
+                raw = item.get("raw_content") or ""
                 if url and raw and len(raw) > 200:  # guard against tiny pages
                     passages.append(raw)
                     ordered_urls.append(url)
@@ -252,9 +345,6 @@ class TavilyWebRetriever:
 # -----------------------------------------------------------------------------
 # Minimal non-LLM cleaner + packer
 # -----------------------------------------------------------------------------
-
-import re
-from typing import Optional
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
 _WS = re.compile(r"\s+")
@@ -433,7 +523,8 @@ async def retrieve_and_pack(
 
     topic_extractor = dspy.ChainOfThought(TopicExtractionSignature)
 
-    with dspy.context(models=models["rag"].dspy_lm):
+    # Use generator LLM because temperature is not zero
+    with dspy.context(models=models["generator"].dspy_lm):
         topic_results = topic_extractor(draft_or_outline=draft_article).output
 
     if topic_results.needs_research:

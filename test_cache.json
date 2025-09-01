@@ -1,0 +1,16 @@
+{
+  "searches": {
+    "test_query": {
+      "timestamp": 1756725246.469023,
+      "response": {
+        "results": []
+      }
+    }
+  },
+  "extractions": {
+    "http://test.com": {
+      "content": "test",
+      "url": "http://test.com"
+    }
+  }
+}

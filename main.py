@@ -197,6 +197,7 @@ Target Scores:
     parser.add_argument(
         "--generator-model",
         default="moonshotai/kimi-k2:free",
+        # default="deepseek/deepseek-r1-0528:free",
         help="LLM model to use for article generation components (default: %(default)s)",
     )
     parser.add_argument(

@@ -4,7 +4,17 @@
 
 ### ✅ Completed (Current Session)
 
-#### RAG Context Management ✅ LATEST MAJOR FEATURE
+#### Cache Thread-Safety Refactoring ✅ LATEST MAJOR FEATURE
+- **Module-Level Cache Architecture:** Moved from instance-level to shared module cache with asyncio.Lock
+- **Atomic File Operations:** Implemented temp file + rename pattern for corruption-free writes
+- **Async Cache Wrappers:** Created protected read/write functions with proper synchronization
+- **Concurrent Safety:** Eliminated race conditions in multiple `_asearch` and `_aextract` coroutines
+- **Performance Optimization:** File I/O runs in thread pool to avoid blocking event loop
+- **Comprehensive Testing:** ✅ Module import, ✅ basic operations, ✅ concurrent access (50 operations), ✅ multiple instances
+- **Zero Breaking Changes:** Public API unchanged, full backward compatibility maintained
+- **Scalable Design:** Single cache instance shared across all retriever instances
+
+#### RAG Context Management ✅ PREVIOUS MAJOR FEATURE
 - **User-Controlled Context Strategy:** New --recreate-ctx command line flag for RAG context management
 - **Performance vs. Freshness Trade-off:** Users choose between context consistency (False) or fresh context (True)
 - **Smart Initial Generation:** Always generates fresh context for first article version to ensure quality baseline

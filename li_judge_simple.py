@@ -95,8 +95,8 @@ SCORING_CRITERIA: Dict[str, List[Dict[str, Any]]] = {
     ],
     "Authority & Credibility": [
         {
-            "question": "Are claims backed by data, research, or credible sources?",
-            "fix": "Back all claims with data, research, or credible sources.",
+            "question": "Do all statements containing hard data, rather than opinions, have associated inline citations that can be found in the provided context? List in returning evidence those that don't that need removing or citations adding.",
+            "fix": "Only using validated references from the provided context, add inline citations for all statements containing hard data or remove the unverified claim.",
         },
         {
             "question": "Does the article demonstrate unique experience or perspective?",
@@ -642,13 +642,8 @@ def get_criteria_for_generation() -> str:
         criteria_list = SCORING_CRITERIA[category]
         for i, criterion in enumerate(criteria_list, 1):
             question = criterion["question"]
-            fix = criterion.get("fix", "")
 
             generation_prompt.append(f"  {i}. {question}")
-
-            # Add fix guidance for better generation
-            if fix:
-                generation_prompt.append(f"     Fix if failed: {fix}")
 
         generation_prompt.append("")
 

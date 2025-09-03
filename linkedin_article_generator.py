@@ -14,8 +14,8 @@ import re
 import asyncio
 
 from models import ArticleVersion, JudgementModel
-from li_judge_simple import ComprehensiveLinkedInArticleJudge
-from li_judge_simple import get_criteria_for_generation
+from li_article_judge import ComprehensiveLinkedInArticleJudge
+from criteria_extractor import CriteriaExtractor
 from word_count_manager import WordCountManager
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
@@ -23,52 +23,81 @@ from rag_fast import retrieve_and_pack
 
 
 class ArticleGenerationSignature(dspy.Signature):
-    """Generate a complete LinkedIn article from draft/outline with RAG context and markdown formatting."""
+    """Generate a complete LinkedIn article in markdown format with these requirements:
 
-    original_draft = dspy.InputField(
+    WORD LENGTH REQUIREMENT:
+    - The top priority is to meet the specified article_length range
+    - If expansion is needed, focus on areas that improve both length and quality
+    - If condensation is needed, preserve all key insights and arguments
+    - Use the scoring criteria to strategically adjust content length while maintaining article quality
+
+    MARKDOWN FORMATTING:
+    - Use clear header hierarchy (# ## ###)
+    - Include bullet points and numbered lists where appropriate
+    - Use **bold** and *italic* emphasis for key points
+    - Professional paragraph structure with engaging subheadings
+
+    CITATION CREATION:
+    - The context string already contains properly formatted inline citations as [specific claim or data point](source_url)
+    - Use these pre-formatted citations directly when incorporating relevant information from the context
+    - Example: If context contains "Company revenue was [$50 billion](https://example.com)", use this exact citation format
+    - ONLY cite information that directly appears in the provided context string with its existing citations
+    - Present analysis, opinions, and synthesis as uncited content
+
+    CONTENT REQUIREMENTS:
+    - Expand the draft/outline into a comprehensive LinkedIn article
+    - Maintain professional LinkedIn tone and structure
+    - Objective and third-person, with a more structured, business/technical tone
+    - Address all key points from the original draft"""
+
+    article_length: str = dspy.InputField(
+        desc="The required length range of the wanted article in words"
+    )
+    original_draft: str = dspy.InputField(
         desc="Original draft to expand on key points if necessary",
     )
-    context = dspy.InputField(
+    context: str = dspy.InputField(
         desc="String containing relevant content with inline markdown citations already formatted. Citations appear as [specific claim or data point](source_url) within the text.",
         default="",
     )
-    scoring_criteria = dspy.InputField(desc="Complete scoring criteria for reference")
-    word_count_guidance = dspy.InputField(desc="Word count optimization guidance")
-
-    generated_article = dspy.OutputField(
-        desc="""Generate a complete LinkedIn article in markdown format with these requirements:
-
-        MARKDOWN FORMATTING:
-        - Use clear header hierarchy (# ## ###)
-        - Include bullet points and numbered lists where appropriate
-        - Use **bold** and *italic* emphasis for key points
-        - Professional paragraph structure with engaging subheadings
-
-        CITATION CREATION:
-        - The context string already contains properly formatted inline citations as [specific claim or data point](source_url)
-        - Use these pre-formatted citations directly when incorporating relevant information from the context
-        - Example: If context contains "Company revenue was [$50 billion](https://example.com)", use this exact citation format
-        - ONLY cite information that directly appears in the provided context string with its existing citations
-        - Present analysis, opinions, and synthesis as uncited content
-        - Aim for 3-8 citations per article by utilizing the pre-formatted citations from the context
-
-        CONTENT REQUIREMENTS:
-        - Expand the draft/outline into a comprehensive LinkedIn article
-        - Maintain professional LinkedIn tone and structure
-        - Objective and third-person, with a more structured, business/technical tone
-        - Address all key points from the original draft
-
-        WORD LENGTH ADJUSTMENT:
-        - Follow the specific word count guidance provided
-        - If expansion is needed, focus on areas that improve both length and quality
-        - If condensation is needed, preserve all key insights and arguments
-        - Use the guidance to strategically adjust content length while maintaining article quality"""
+    scoring_criteria: str = dspy.InputField(
+        desc="Complete scoring criteria for reference"
+    )
+    generated_article: str = dspy.OutputField(
+        desc="""The generated LinkedIn article in markdown format meeting all the above requirements."""
     )
 
 
 class ArticleImprovementSignature(dspy.Signature):
-    """Improve an existing article based on scoring feedback and criteria while maintaining consistency with original draft."""
+    """Improve an existing article based on scoring feedback and criteria while maintaining consistency with original draft.
+    WORD LENGTH REQUIREMENT:
+    - The top priority is to meet the specified article_length range
+    - If expansion is needed, focus on areas that improve both length and quality
+    - If condensation is needed, preserve all key insights and arguments
+    - Use the scoring criteria to strategically adjust content length while maintaining article quality
 
+    MARKDOWN FORMATTING:
+    - Use clear header hierarchy (# ## ###)
+    - Include bullet points and numbered lists where appropriate
+    - Use **bold** and *italic* emphasis for key points
+    - Professional paragraph structure with engaging subheadings
+
+    CITATION CREATION:
+    - The context string already contains properly formatted inline citations as [specific claim or data point](source_url)
+    - Use these pre-formatted citations directly when incorporating relevant information from the context
+    - Example: If context contains "Company revenue was [$50 billion](https://example.com)", use this exact citation format
+    - ONLY cite information that directly appears in the provided context string with its existing citations
+    - Present analysis, opinions, and synthesis as uncited content
+
+    CONTENT REQUIREMENTS:
+    - Expand the draft/outline into a comprehensive LinkedIn article
+    - Maintain professional LinkedIn tone and structure
+    - Objective and third-person, with a more structured, business/technical tone
+    - Address all key points from the original draft"""
+
+    article_length = dspy.InputField(
+        desc="The required length range of the wanted article in words"
+    )
     current_article = dspy.InputField(desc="Current version of the article")
     original_draft = dspy.InputField(
         desc="Original draft for reference to maintain key points"
@@ -81,40 +110,10 @@ class ArticleImprovementSignature(dspy.Signature):
         desc="Detailed scoring feedback and improvement suggestions"
     )
     scoring_criteria = dspy.InputField(desc="Complete scoring criteria for reference")
-    word_count_guidance = dspy.InputField(desc="Word count optimization guidance")
     improvement_focus = dspy.InputField(desc="Specific areas to focus improvement on")
 
     improved_article = dspy.OutputField(
-        desc="""Generate an improved LinkedIn article in markdown format with these requirements:
-
-        MARKDOWN FORMATTING:
-        - Use clear header hierarchy (# ## ###)
-        - Include bullet points and numbered lists where appropriate
-        - Use **bold** and *italic* emphasis for key points
-        - Professional paragraph structure with engaging subheadings
-
-        CITATION CREATION:
-        - The context string already contains properly formatted inline citations as [specific claim or data point](source_url)
-        - Use these pre-formatted citations directly when incorporating relevant information from the context
-        - Example: If context contains "Company revenue was [$50 billion](https://example.com)", use this exact citation format
-        - ONLY cite information that directly appears in the provided context string with its existing citations
-        - Present analysis, opinions, and synthesis as uncited content
-        - Aim for 3-8 citations per article by utilizing the pre-formatted citations from the context
-
-        CONTENT REQUIREMENTS:
-        - Address the scoring feedback while maintaining original draft key points
-        - Maintain professional LinkedIn tone and structure
-
-        IMPROVEMENT STRATEGY:
-        - Focus on the specific improvement areas identified in the feedback
-        - Address scoring weaknesses with targeted improvements
-        - Maintain consistency with the original draft's key points
-
-        WORD LENGTH ADJUSTMENT:
-        - Follow the specific word count guidance provided
-        - If expansion is needed, focus on weak scoring areas to improve both length and quality
-        - If condensation is needed, preserve all key insights and arguments
-        - Use the guidance to strategically adjust content length while maintaining article quality"""
+        desc="The improved article meeting all the above requirements."
     )
 
 
@@ -320,6 +319,7 @@ class LinkedInArticleGenerator:
             max_length=word_count_max,
             passing_score_percentage=target_score_percentage,
         )
+        self.criteria_extractor = CriteriaExtractor()
 
         self.word_count_manager = WordCountManager(word_count_min, word_count_max)
 
@@ -593,9 +593,10 @@ class LinkedInArticleGenerator:
             print(f"📚 Using context: {len(final_context)} characters")
 
         # Prepare generation inputs
-        scoring_criteria = get_criteria_for_generation()
-        word_count_guidance = self.word_count_manager.get_length_optimization_prompt(
-            self.word_count_manager.target_optimal
+        scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
+        draft_length = self.word_count_manager.count_words(draft_or_outline)
+        article_length = self.word_count_manager.get_length_optimization_prompt(
+            draft_length
         )
 
         try:
@@ -605,7 +606,7 @@ class LinkedInArticleGenerator:
                 "draft": draft_or_outline,
                 "context": context_str,
                 "criteria": scoring_criteria,
-                "guidance": word_count_guidance,
+                "article_length": article_length,
             }
 
             try:
@@ -622,10 +623,10 @@ class LinkedInArticleGenerator:
             # Generate initial article with comprehensive RAG context
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.generator(
+                    article_length=article_length,
                     original_draft=draft_or_outline,
                     context=final_context,
                     scoring_criteria=scoring_criteria,
-                    word_count_guidance=word_count_guidance,
                 )
 
             return result.generated_article, final_context
@@ -668,8 +669,8 @@ class LinkedInArticleGenerator:
             print(f"📚 Using context: {len(context)} characters")
 
         # Prepare improvement inputs using judge's guidance
-        scoring_criteria = get_criteria_for_generation()
-        word_count_guidance = self.word_count_manager.get_length_optimization_prompt(
+        scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
+        article_length = self.word_count_manager.get_length_optimization_prompt(
             judgement.word_count
         )
 
@@ -682,7 +683,7 @@ class LinkedInArticleGenerator:
                 "context": context_str,
                 "feedback": judgement.improvement_prompt,
                 "criteria": scoring_criteria,
-                "guidance": word_count_guidance,
+                "guidance": article_length,
                 "focus": judgement.focus_areas,
             }
 
@@ -699,12 +700,12 @@ class LinkedInArticleGenerator:
             # Generate improved article using judge's improvement prompt
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.improver(
+                    article_length=article_length,
                     current_article=current_article,
                     original_draft=self._get_original_draft(),
                     context=context,
                     score_feedback=judgement.improvement_prompt,
                     scoring_criteria=scoring_criteria,
-                    word_count_guidance=word_count_guidance,
                     improvement_focus=judgement.focus_areas,
                 )
 

@@ -99,7 +99,6 @@ class CriteriaExtractor:
         guidelines.append("• Ensure each criterion is explicitly addressed")
         guidelines.append("• Use specific examples and evidence")
         guidelines.append("• Maintain professional LinkedIn tone")
-        guidelines.append("• Target 2000-2500 words for optimal length")
 
         return "\n".join(guidelines)
 

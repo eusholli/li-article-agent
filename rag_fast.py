@@ -433,18 +433,22 @@ class PackSettings:
     max_per_doc_tokens: int = 6_000  # soft cap per source
 
 
+# (Keep all other code in rag_fast.py the same)
+
+
 class TextPacker:
     def __init__(self, settings: PackSettings | None = None):
         self.settings = settings or PackSettings()
 
     def pack(self, passages: List[str], urls: List[str]) -> Tuple[str, List[str]]:
         """
-        Returns a single context string (with URL markers) and the list of URLs actually packed.
+        Returns a single context string of individually cited facts and the list of URLs used.
         Strategy:
-          - strip boilerplate
-          - pick salient sentences
-          - dedupe aggressively
-          - greedily pack under the token budget
+          - Strip boilerplate
+          - Pick salient sentences
+          - Format each sentence as a markdown link: [sentence](url)
+          - Dedupe aggressively
+          - Greedily pack under the token budget
         """
         assert len(passages) == len(urls), "passages and urls must align"
 
@@ -453,46 +457,53 @@ class TextPacker:
             self.settings.max_input_tokens
             - self.settings.reserve_for_prompt_and_answer,
         )
-        chosen_urls: List[str] = []
 
-        # Precompute cleaned & salient text per doc
-        docs: List[Tuple[str, str]] = []  # (url, compressed_text)
+        # 1. Create a flat list of citable facts from all documents
+        citable_facts: List[str] = []
         for url, raw in zip(urls, passages):
             cleaned = _strip_boilerplate(raw)
             sents = _salient_sentences(cleaned)
-            sents = dedupe_keep_order(sents)
+
             # Soft per-doc cap to avoid one giant page eating the budget
-            running: List[str] = []
+            doc_facts: List[str] = []
+            running_text = ""
             for s in sents:
+                # Check token count for this sentence before adding
                 if (
-                    count_tokens(" ".join(running + [s]), self.settings.target_model)
+                    count_tokens(running_text + " " + s, self.settings.target_model)
                     > self.settings.max_per_doc_tokens
                 ):
                     break
-                running.append(s)
-            if running:
-                docs.append((url, " ".join(running)))
+                # Format as an inline markdown citation
+                doc_facts.append(f"[{s.strip()}]({url})")
+                running_text += " " + s
 
-        # Greedy pack
-        chunks: List[str] = []
-        total = 0
-        for url, body in docs:
-            header = f"[SOURCE] {url}\n"
-            candidate = header + body + "\n\n"
-            c_tokens = count_tokens(candidate, self.settings.target_model)
-            if total + c_tokens > budget:
-                # try half of it
-                half = body[: max(200, len(body) // 2)]
-                candidate = header + half + "\n\n"
-                c_tokens = count_tokens(candidate, self.settings.target_model)
-                if total + c_tokens > budget:
-                    break
-            chunks.append(candidate)
-            chosen_urls.append(url)
-            total += c_tokens
+            citable_facts.extend(doc_facts)
 
-        return "".join(chunks), chosen_urls
+        # 2. Deduplicate the combined list of facts
+        unique_facts = dedupe_keep_order(citable_facts)
 
+        # 3. Greedy pack the unique, citable facts
+        packed_items: List[str] = []
+        total_tokens = 0
+        for fact in unique_facts:
+            fact_tokens = count_tokens(fact, self.settings.target_model)
+            if total_tokens + fact_tokens <= budget:
+                packed_items.append(fact)
+                total_tokens += fact_tokens
+            else:
+                break
+
+        # 4. Extract the URLs that were actually included in the final context
+        final_context = "\n\n".join(packed_items)
+        # A simple regex to find all URLs in the final markdown-linked context
+        url_pattern = re.compile(r"\]\((https?://[^\)]+)\)")
+        used_urls = _unique_stable(url_pattern.findall(final_context))
+
+        return final_context, used_urls
+
+
+# (Keep the retrieve_and_pack function and other code the same)
 
 # -----------------------------------------------------------------------------
 # Example end-to-end helper
@@ -558,4 +569,5 @@ async def retrieve_and_pack(
     if not passages:
         return "", []
     context, used_urls = TextPacker(pack).pack(passages, urls)
+    print(context)
     return context, used_urls

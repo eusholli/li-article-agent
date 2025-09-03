@@ -256,7 +256,23 @@ class WordCountManager:
         Returns:
             str: Detailed optimization prompt for LLM
         """
+
         status = self.get_word_count_status(current_count)
+
+        prompt_parts = [
+            "WORD LENGTH REQUIREMENTS AND OPTIMIZATION GUIDANCE",
+        ]
+
+        if status["adjustment_needed"] == "expand":
+            word_advice = f"Expand by {status['adjustment_amount']} words, maximizing quality improvements"
+        elif status["adjustment_needed"] == "condense":
+            word_advice = f"Condense by {status['adjustment_amount']} words, preserving all key insights"
+        else:
+            word_advice = "Maintain the current document length while maintaining the wanted document quality"
+
+        prompt_parts.append(word_advice)
+        return "\n".join(prompt_parts)
+
         prompt_parts = []
 
         prompt_parts.append("WORD COUNT OPTIMIZATION GUIDANCE")

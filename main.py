@@ -20,7 +20,7 @@ from pathlib import Path
 
 from linkedin_article_generator import LinkedInArticleGenerator
 from dspy_factory import get_openrouter_model, DspyModelConfig
-from li_judge_simple import print_score_report
+from li_article_judge import print_score_report
 from datetime import datetime
 from typing import Dict, Any
 

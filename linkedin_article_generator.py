@@ -173,11 +173,11 @@ class LinkedInArticleGenerator:
                 print(f"  {judgement.focus_areas}")
 
             print(f"  • Version: {version.version}")
-            print(f"  • Word Count: {judgement.word_count} words")
             print(
                 f"  • Score: {judgement.total_score}/{judgement.max_score} ({judgement.percentage:.1f}%)"
             )
             print(f"  • Target: ≥{self.generator.target_score_percentage}%")
+            print(f"  • Word Count: {judgement.word_count} words")
             print(
                 f"  • Target Range: {self.generator.word_count_manager.target_min}-{self.generator.word_count_manager.target_max}"
             )
@@ -330,6 +330,7 @@ class LinkedInArticleGenerator:
         self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
 
         # Track generation history
+        self.iteration = 0
         self.versions: List[ArticleVersion] = []
         self.generation_log: List[str] = []
         self.original_draft: Optional[str] = None
@@ -379,17 +380,17 @@ class LinkedInArticleGenerator:
         Returns:
             Dict containing final article, score, and generation metadata
         """
-        return self.generate_article_with_context(initial_draft, {}, verbose)
+        return self.generate_article_with_context(initial_draft, "", verbose)
 
     def generate_article_with_context(
-        self, initial_draft: str, context: Dict[str, str] = {}, verbose: bool = True
+        self, initial_draft: str, context: str = "", verbose: bool = True
     ) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline with web context.
 
         Args:
             initial_draft: Initial draft article or outline
-            context: Dictionary mapping URLs to their text content for citation selection
+            context: String containing relevant content with inline citations
             verbose: Whether to print progress updates
 
         Returns:
@@ -402,7 +403,7 @@ class LinkedInArticleGenerator:
         self.versions.clear()
         self.generation_log.clear()
         self.original_draft = initial_draft
-        self.search_context = context or {}
+        self.search_context = context or ""
 
         if context and verbose:
             print(f"🌐 Using web context: {len(context)} URLs")
@@ -416,6 +417,31 @@ class LinkedInArticleGenerator:
         initial_article, initial_context = self._generate_initial_article(
             initial_draft, context, verbose
         )
+
+        # Store initial version with a pending judgement
+        proxy_judgement = JudgementModel(
+            total_score=0,
+            max_score=100,
+            percentage=0.0,
+            performance_tier="User provided draft",
+            word_count=self.word_count_manager.count_words(initial_draft),
+            meets_requirements=False,
+            improvement_prompt="There is no improvement guidance since this is the user-provided draft, that will not be judged.",
+            focus_areas="Pending analysis - temporary placeholder for focus areas",
+            overall_feedback=None,  # Optional field for comprehensive feedback
+        )
+
+        # Create a temporary version for judging
+        initial_version = ArticleVersion(
+            version=self.iteration,
+            content=initial_draft,
+            context=initial_context,
+            recreate_ctx=self.recreate_ctx,
+            judgement=proxy_judgement,
+        )
+
+        self.versions.append(initial_version)
+        self.iteration += 1
 
         # Start iterative improvement process with the generated article
         final_result = self._iterative_improvement_process(
@@ -433,16 +459,17 @@ class LinkedInArticleGenerator:
         """Run the iterative improvement process with user interaction and combined quality and length validation."""
         current_article = initial_article
         current_context = initial_context
-        iteration = 0
         user_instructions = ""  # Track user-provided instructions
 
         # Ensure at least one iteration runs to get a judgement
-        while iteration < max(1, self.max_iterations):
-            iteration += 1
+        while self.iteration < max(1, self.max_iterations):
+            self.iteration += 1
 
             # Print article version before judging
             if verbose:
-                self._print_article_version_before_judging(current_article, iteration)
+                self._print_article_version_before_judging(
+                    current_article, self.iteration
+                )
 
             # Create a pending judgement for the temporary version
             pending_judgement = JudgementModel(
@@ -459,7 +486,7 @@ class LinkedInArticleGenerator:
 
             # Create a temporary version for judging
             temp_version = ArticleVersion(
-                version=iteration,
+                version=self.iteration,
                 content=current_article,
                 context=current_context,
                 recreate_ctx=self.recreate_ctx,
@@ -472,7 +499,7 @@ class LinkedInArticleGenerator:
 
             # Now create the final version with the actual judgement
             version = ArticleVersion(
-                version=iteration,
+                version=self.iteration,
                 content=current_article,
                 context=current_context,
                 recreate_ctx=self.recreate_ctx,
@@ -490,7 +517,7 @@ class LinkedInArticleGenerator:
 
             if self.auto == False:
                 # In non-auto mode, always print iteration status
-                self.verbose_manager.print_iteration_status(iteration, version)
+                self.verbose_manager.print_iteration_status(self.iteration, version)
 
                 user_decision = self._get_user_decision(version)
                 if user_decision == "finish":
@@ -515,7 +542,7 @@ class LinkedInArticleGenerator:
                         )
 
                     self.generation_log.append(
-                        f"Iteration {iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
+                        f"Iteration {self.iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
                     )
                     break  # Exit loop if both targets are met
 
@@ -564,7 +591,7 @@ class LinkedInArticleGenerator:
             "target_achieved": both_targets_achieved,
             "quality_achieved": final_quality_achieved,
             "length_achieved": final_length_achieved,
-            "iterations_used": iteration,
+            "iterations_used": self.iteration,
             "versions": self.versions,
             "generation_log": self.generation_log,
             "word_count": final_word_count,
@@ -574,7 +601,7 @@ class LinkedInArticleGenerator:
         return final_result
 
     def _generate_initial_article(
-        self, draft_or_outline: str, context: Dict[str, str], verbose: bool
+        self, draft_or_outline: str, context: str, verbose: bool
     ) -> Tuple[str, str]:
         """Generate initial markdown article from draft/outline using ArticleGenerationSignature.
 
@@ -588,10 +615,10 @@ class LinkedInArticleGenerator:
                 "Performing comprehensive RAG search"
             )
 
-        final_context = self._perform_rag_search(draft_or_outline, verbose)
+        context = context or self._perform_rag_search(draft_or_outline, verbose)
 
-        if verbose and final_context:
-            print(f"📚 Using context: {len(final_context)} characters")
+        if verbose and context:
+            print(f"📚 Using context: {len(context)} characters")
 
         # Prepare generation inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
@@ -602,10 +629,9 @@ class LinkedInArticleGenerator:
 
         try:
             # Validate context window before generation
-            context_str = str(final_context) if final_context else ""
             content_parts = {
                 "draft": draft_or_outline,
-                "context": context_str,
+                "context": context,
                 "criteria": scoring_criteria,
                 "article_length": article_length,
             }
@@ -616,7 +642,7 @@ class LinkedInArticleGenerator:
                 if verbose:
                     print(f"⚠️ Context window validation failed: {e}")
                 # Reduce context size and retry
-                final_context = ""
+                context = ""
                 context_str = ""
                 content_parts["context"] = ""
                 self.context_manager.validate_content(content_parts)
@@ -626,18 +652,18 @@ class LinkedInArticleGenerator:
                 result = self.generator(
                     article_length=article_length,
                     original_draft=draft_or_outline,
-                    context=final_context,
+                    context=context,
                     scoring_criteria=scoring_criteria,
                 )
 
-            return result.generated_article, final_context
+            return result.generated_article, context
 
         except Exception as e:
             if verbose:
                 print(f"⚠️ Initial generation failed, using draft as fallback: {e}")
 
             # Fallback to original draft if generation fails
-            return draft_or_outline, final_context or ""
+            return draft_or_outline, context or ""
 
     def _generate_improved_version_with_judgement(
         self, current_article: str, judgement: JudgementModel, verbose: bool = False

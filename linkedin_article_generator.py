@@ -163,6 +163,15 @@ class LinkedInArticleGenerator:
 
             judgement = version.judgement
             print("📊 CURRENT STATUS:")
+
+            if judgement.improvement_prompt:
+                print(f"\n🔍 IMPROVEMENT GUIDANCE:")
+                print(f"  {judgement.improvement_prompt}")
+
+            if judgement.focus_areas:
+                print(f"\n🎯 FOCUS AREAS:")
+                print(f"  {judgement.focus_areas}")
+
             print(f"  • Version: {version.version}")
             print(f"  • Word Count: {judgement.word_count} words")
             print(
@@ -172,14 +181,6 @@ class LinkedInArticleGenerator:
             print(
                 f"  • Target Range: {self.generator.word_count_manager.target_min}-{self.generator.word_count_manager.target_max}"
             )
-
-            if judgement.improvement_prompt:
-                print(f"\n🔍 IMPROVEMENT GUIDANCE:")
-                print(f"  {judgement.improvement_prompt}")
-
-            if judgement.focus_areas:
-                print(f"\n🎯 FOCUS AREAS:")
-                print(f"  {judgement.focus_areas}")
 
         def print_rag_status(
             self, context_length: int, urls: Optional[List[str]] = None

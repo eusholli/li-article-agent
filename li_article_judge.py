@@ -800,21 +800,41 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         # Get the latest article version
         latest_version = article_versions[-1]
         article_text = latest_version.content
-        # Get scoring results from the fast scorer
-        score_prediction = self.scorer(article_text)
-        score_results = score_prediction.output
 
         # Count words and check length requirements
         word_count = self.word_count_manager.count_words(article_text)
         length_status = self.word_count_manager.get_word_count_status(word_count)
+        length_achieved = length_status["within_range"]
+
+        if not length_achieved:
+            improvement_prompt = self.criteria_extractor.get_criteria_for_generation()
+
+            # Create the judgement model
+            length_judgement = JudgementModel(
+                total_score=0,
+                max_score=100,
+                percentage=0.0,
+                performance_tier="Pending",
+                word_count=word_count,
+                meets_requirements=False,
+                improvement_prompt=improvement_prompt,
+                focus_areas="Pending Judging while word length is acceptable.",
+                overall_feedback="Pending Judging while word length is acceptable.",
+            )
+
+            return dspy.Prediction(output=length_judgement)
+
+        # Proceed with full scoring if length is acceptable
+        # Get scoring results from the fast scorer
+        score_prediction = self.scorer(article_text)
+        score_results = score_prediction.output
 
         # Check if both targets are achieved
         quality_achieved = score_results.percentage >= self.passing_score_percentage
-        length_achieved = length_status["within_range"]
-        meets_requirements = quality_achieved and length_achieved
+        # meets_requirements = quality_achieved and length_achieved
 
         # Generate improvement analysis if needed
-        if meets_requirements:
+        if quality_achieved:
             improvement_prompt = (
                 "Article meets all requirements. No improvements needed."
             )
@@ -833,7 +853,7 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
             percentage=score_results.percentage,
             performance_tier=score_results.performance_tier,
             word_count=word_count,
-            meets_requirements=meets_requirements,
+            meets_requirements=quality_achieved,
             improvement_prompt=improvement_prompt,
             focus_areas=focus_areas,
             overall_feedback=score_results.overall_feedback,

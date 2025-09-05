@@ -63,9 +63,53 @@ The system uses a comprehensive 180-point scoring system with these categories:
 
 ### Performance Tiers
 - **89%+**: World-class — publish as is
-- **72%+**: Strong, but tighten weak areas  
+- **72%+**: Strong, but tighten weak areas
 - **56%+**: Needs restructuring and sharper insights
 - **<56%**: Rework before publishing
+
+## User Experience Features
+
+### Progress Dashboard
+The system now provides a clean, user-friendly progress dashboard that replaces overwhelming technical output:
+
+```
+🎯 Article Quality Progress
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Current Status: 75.2% (Strong, but tighten weak areas)
+🎯 Target: ≥89.0% (World-class)
+📈 Progress: █████████████████████████░░░░░ 84.5%
+📝 Word Count: 2100 words (✅ Within target range)
+💼 Business Impact: Good foundation - add depth for maximum impact
+```
+
+### Contextual Decision Prompts
+Instead of generic questions, users receive informed guidance about what the next iteration will improve:
+
+```
+Your article is 75.2% complete. Next iteration will improve:
+
+🎯 Primary Focus Areas:
+  • strategic deconstruction
+  • authority & credibility
+
+📈 Expected Improvement: +12.0 points (75.2% → 87.2%)
+⏱️  Time Estimate: 2-3 minutes
+
+Choose your next action:
+  1. ✅ Proceed with these improvements
+  2. ✏️  Add specific instructions for this iteration
+  3. 🏁 Finish with current version
+```
+
+### Quiet Mode Enhancements
+When using `--quiet` flag, the system now shows the progress dashboard instead of full technical output, providing essential information without overwhelming details.
+
+### Business Value Translation
+Technical scores are translated into business outcomes:
+- **World-class (89%+)**: "Will drive 3x engagement and viral potential"
+- **Strong (72%+)**: "Good foundation - add depth for maximum impact"
+- **Needs Work (56%+)**: "Solid draft - needs strategic refinement"
+- **Rework (<56%)**: "Needs fundamental restructuring"
 
 ## Command Line Interface
 
@@ -106,6 +150,9 @@ python main.py \
 
 # Quiet mode (minimal output)
 python main.py --quiet --file draft.txt --output article.md
+
+# Interactive mode with progress dashboard
+python main.py --file draft.txt  # Shows user-friendly progress and decision prompts
 ```
 
 ### Full Options Reference

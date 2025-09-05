@@ -340,26 +340,39 @@ The future will likely be hybrid, combining the best of both worlds.
         # Generate article
         result = generator.generate_article(draft_text, verbose=not args.quiet)
 
-        # Print detailed scoring report
-        print_score_report(result["final_score"])
+        # Print detailed scoring report or dashboard based on quiet mode
+        if args.quiet:
+            # In quiet mode, show the progress dashboard instead of full report
+            from progress_dashboard import ProgressDashboard
 
-        # Save article if output path specified
+            dashboard = ProgressDashboard()
+            final_dashboard = dashboard.generate_progress_dashboard(
+                current_score=result["final_score"].percentage,
+                target_score=args.target_score,
+                word_count=result["word_count"],
+                target_range=(args.word_count_min, args.word_count_max),
+            )
+            print(final_dashboard)
+        else:
+            print_score_report(result["final_score"])
+
+        # Always handle final article output - either save to file or display
         if args.output:
+            # Save to specified file
             save_article(result["final_article"], args.output)
+        else:
+            # Display to screen (both quiet and non-quiet modes)
+            print("\n" + "=" * 80)
+            print("📄 FINAL GENERATED ARTICLE")
+            print("=" * 80)
+            print(result["final_article"])
+            print("\n" + "=" * 80)
 
         # Export detailed results if specified
         if args.export_results:
             generator.export_results(args.export_results)
             if not args.quiet:
                 print(f"📊 Detailed results exported to: {args.export_results}")
-
-        # Print final article if not quiet and no output file
-        if not args.quiet and not args.output:
-            print("\n" + "=" * 80)
-            print("📄 FINAL GENERATED ARTICLE")
-            print("=" * 80)
-            print(result["final_article"])
-            print("\n" + "=" * 80)
 
         # Exit with appropriate code based on results
         if result["target_achieved"]:

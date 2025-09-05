@@ -14,12 +14,12 @@ import re
 import asyncio
 
 from models import ArticleVersion, JudgementModel
-from li_article_judge import ComprehensiveLinkedInArticleJudge
-from criteria_extractor import CriteriaExtractor
+from li_article_judge import ComprehensiveLinkedInArticleJudge, CriteriaExtractor
 from word_count_manager import WordCountManager
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
 from rag_fast import retrieve_and_pack
+from progress_dashboard import ProgressDashboard, UserInteractionManager
 
 
 class ArticleGenerationSignature(dspy.Signature):
@@ -307,13 +307,17 @@ class LinkedInArticleGenerator:
         # Initialize VerboseManager for beautiful verbose output
         self.verbose_manager = self.VerboseManager(self)
 
+        # Initialize progress dashboard and user interaction manager
+        self.dashboard = ProgressDashboard()
+        self.interaction_manager = UserInteractionManager(self.dashboard)
+
         # Store model preferences
         self.models = models
 
         # Initialize context window manager
         self.context_manager = ContextWindowManager(models["generator"])
 
-        # Use the new comprehensive judge with encapsulated analysis logic
+        # Use the new A vs. B judge with encapsulated analysis logic
         self.judge = ComprehensiveLinkedInArticleJudge(
             models=models,
             min_length=word_count_min,
@@ -495,16 +499,10 @@ class LinkedInArticleGenerator:
 
             # Judge with the temporary version included
             prediction = self.judge(self.versions + [temp_version])
-            judgement = prediction.output  # This is the real judgement
 
-            # Now create the final version with the actual judgement
-            version = ArticleVersion(
-                version=self.iteration,
-                content=current_article,
-                context=current_context,
-                recreate_ctx=self.recreate_ctx,
-                judgement=judgement,  # Real judgement from the judge
-            )
+            # Judged version to append
+            version = prediction.output  # This is the real judgement
+            judgement = version.judgement
             self.versions.append(version)
 
             # Print judging results after judging
@@ -522,16 +520,15 @@ class LinkedInArticleGenerator:
                 user_decision = self._get_user_decision(version)
                 if user_decision == "finish":
                     break
-                elif user_decision == "continue":
+                elif user_decision == "instructions":
                     user_instructions = self._get_user_instructions()
                     # Prepend user instructions to judge's improvement prompt if provided
                     if user_instructions:
                         judgement.improvement_prompt = f"""THESE ARE NEW INSTRUCTIONS:
 <NEW>
 {user_instructions}
-<NEW/>
-
-{judgement.improvement_prompt}"""
+<NEW/>"""
+                # Continue with improvement if "continue" or "instructions" was selected
             else:
 
                 # Check if targets are achieved using the judge's decision
@@ -643,7 +640,6 @@ class LinkedInArticleGenerator:
                     print(f"⚠️ Context window validation failed: {e}")
                 # Reduce context size and retry
                 context = ""
-                context_str = ""
                 content_parts["context"] = ""
                 self.context_manager.validate_content(content_parts)
 
@@ -703,11 +699,10 @@ class LinkedInArticleGenerator:
 
         try:
             # Validate context window before improvement
-            context_str = str(context) if context else ""
             content_parts = {
                 "current_article": current_article,
                 "original_draft": self._get_original_draft(),
-                "context": context_str,
+                "context": context,
                 "feedback": judgement.improvement_prompt,
                 "criteria": scoring_criteria,
                 "guidance": article_length,
@@ -720,7 +715,6 @@ class LinkedInArticleGenerator:
                 if verbose:
                     print(f"⚠️ Context window validation failed for improvement: {e}")
                 # Reduce context size and retry
-                context_str = ""
                 content_parts["context"] = ""
                 self.context_manager.validate_content(content_parts)
 
@@ -793,23 +787,45 @@ class LinkedInArticleGenerator:
         print("=" * 60)
 
     def _get_user_decision(self, version: "ArticleVersion") -> str:
-        """Ask user whether to continue improving or finish."""
-        print("\n🤔 USER DECISION TIME")
-        print("-" * 30)
-        print(f"Version {version.version} has been evaluated.")
-        print("Choose your next action:")
-        print("  1. finish - Accept this version as final")
-        print("  2. continue - Generate another improved version")
+        """Ask user whether to continue improving or finish using contextual dashboard."""
+        judgement = version.judgement
+
+        # Generate progress dashboard
+        dashboard = self.dashboard.generate_progress_dashboard(
+            current_score=judgement.percentage,
+            target_score=self.target_score_percentage,
+            word_count=judgement.word_count,
+            target_range=(
+                self.word_count_manager.target_min,
+                self.word_count_manager.target_max,
+            ),
+        )
+        print(dashboard)
+
+        # Generate contextual decision prompt
+        focus_areas = (
+            judgement.focus_areas.split(", ")
+            if judgement.focus_areas
+            else ["General improvements"]
+        )
+        prompt = self.interaction_manager.get_contextual_decision_prompt(
+            current_score=judgement.percentage,
+            improvement_prompt=judgement.improvement_prompt,
+            focus_areas=focus_areas,
+        )
+        print(prompt)
 
         while True:
             try:
-                choice = input("Enter your choice (1 or 2): ").strip().lower()
-                if choice in ["1", "finish", "f"]:
-                    return "finish"
-                elif choice in ["2", "continue", "c"]:
+                choice = input("Enter your choice (1, 2, or 3): ").strip().lower()
+                if choice in ["1", "proceed", "p"]:
                     return "continue"
+                elif choice in ["2", "add", "a", "instructions", "i"]:
+                    return "instructions"
+                elif choice in ["3", "finish", "f"]:
+                    return "finish"
                 else:
-                    print("Please enter '1', 'finish', '2', or 'continue'")
+                    print("Please enter '1', '2', or '3'")
             except KeyboardInterrupt:
                 print("\nOperation cancelled by user.")
                 return "finish"

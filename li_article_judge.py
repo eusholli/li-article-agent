@@ -20,87 +20,22 @@ Usage:
 
 import argparse
 import sys
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 import dspy
 from pydantic import BaseModel, Field, validator
 from attachments.dspy import Attachments
 from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
-from models import ArticleVersion, JudgementModel
+from models import ArticleVersion, JudgementModel, ScoreResultModel, ArticleScoreModel
 import logging
+from word_count_manager import WordCountManager
+import random
 
 
 # ==========================================================================
 # SECTION 1: DATA STRUCTURES
 # ==========================================================================
-
-
-class ScoreResultModel(BaseModel):
-    """
-    🎯 PYDANTIC MODEL: Individual Scoring Result
-
-    This is a Pydantic model that defines the structure of individual criterion scoring data.
-    Pydantic ensures that the LLM returns data in exactly the format we expect.
-
-    Think of this as a "template" that must be filled out completely for each criterion.
-    Each field has a description that helps understand what data should be generated.
-    """
-
-    criterion: str = Field(
-        ...,
-        description="The specific criterion being evaluated (e.g., 'Q1: Does the article break down...')",
-    )
-    score: int = Field(
-        ..., description="Weighted score for this criterion based on point value"
-    )
-    reasoning: str = Field(
-        ..., description="Detailed explanation of why this score was given"
-    )
-    suggestions: str = Field(
-        ..., description="Specific suggestions for improvement on this criterion"
-    )
-
-
-class ArticleScoreModel(BaseModel):
-    """
-    📊 PYDANTIC MODEL: Complete Article Scoring Results
-
-    This is a Pydantic model that defines the structure of complete article analysis data.
-    Pydantic ensures that all scoring components are present and properly formatted.
-
-    Think of this as a comprehensive "report template" that must be filled out completely.
-    Each field has a description that helps understand the expected analysis output.
-
-    Why use Pydantic for article scoring?
-    - Guarantees consistent output format across all analyses
-    - Automatic validation of scoring data structure
-    - Type safety for scoring calculations
-    - Clear documentation of expected analysis components
-    """
-
-    total_score: int = Field(
-        ..., description="Total weighted score achieved across all criteria"
-    )
-    max_score: int = Field(..., description="Maximum possible score (180 points total)")
-    percentage: float = Field(
-        ..., description="Percentage score (total_score/max_score * 100)"
-    )
-    category_scores: Dict[str, List[ScoreResultModel]] = Field(
-        ...,
-        description="Breakdown of scores by category with individual criterion results",
-    )
-    overall_feedback: str = Field(
-        ...,
-        description="Comprehensive feedback on article strengths and improvement areas",
-    )
-    performance_tier: str = Field(
-        ...,
-        description="Performance tier classification (World-class, Strong, Needs work, or Rework needed)",
-    )
-    word_count: Optional[int] = Field(
-        None, description="Current word count of the article being scored"
-    )
 
 
 class CriterionScoringOutput(BaseModel):
@@ -273,6 +208,30 @@ class ComprehensiveArticleScoreOutput(BaseModel):
         missing_categories = expected_categories - set(v.keys())
         if missing_categories:
             raise ValueError(f"Missing categories: {missing_categories}")
+        return v
+
+
+class ABComparisonOutput(BaseModel):
+    """
+    ⚖️ PYDANTIC MODEL: DSPy Output for Article Comparison
+
+    This Pydantic model defines the structured output format for the ABArticleScorer
+    DSPy signature. It supports three comparison outcomes: A better, B better, or no difference.
+    """
+
+    comparison_result: str = Field(
+        ..., description="Comparison result: 'A_better', 'B_better', or 'no_difference'"
+    )
+    reasoning: str = Field(
+        ..., min_length=10, description="Detailed reasoning for the comparison result"
+    )
+
+    @validator("comparison_result")
+    def validate_result(cls, v):
+        """Validate that comparison result is one of the expected values."""
+        valid_results = ["A_better", "B_better", "no_difference"]
+        if v not in valid_results:
+            raise ValueError(f"Must be one of: {valid_results}")
         return v
 
 
@@ -596,6 +555,38 @@ OUTPUT STRUCTURE VALIDATION:
     )
 
 
+class ABArticleScorer(dspy.Signature):
+    """
+    Compare two versions of a LinkedIn article and determine the better one based on the provided scoring criteria.
+    Supports three outcomes: A better, B better, or no real difference.
+
+    CRITICAL INSTRUCTIONS:
+    - Compare the two articles comprehensively using the scoring criteria
+    - Return EXACTLY ONE of these three values in comparison_result:
+      * "A_better" - if Article A is clearly better than Article B
+      * "B_better" - if Article B is clearly better than Article A
+      * "no_difference" - if there is no real difference between the articles
+    - Only use "no_difference" when the articles are truly equivalent in quality
+    - Provide detailed reasoning explaining your choice
+    """
+
+    article_a = dspy.InputField(
+        desc="The first version of the LinkedIn article to evaluate"
+    )
+
+    article_b = dspy.InputField(
+        desc="The second version of the LinkedIn article to evaluate"
+    )
+
+    scoring_criteria_json = dspy.InputField(
+        desc="The scoring criteria to use for evaluation in JSON format"
+    )
+
+    output: ABComparisonOutput = dspy.OutputField(
+        desc="Structured comparison result with result type and reasoning. Must use exactly one of: 'A_better', 'B_better', or 'no_difference'"
+    )
+
+
 class LinkedInArticleScorer(dspy.Module):
     """Complete LinkedIn article scoring system using DSPy."""
 
@@ -738,6 +729,38 @@ class LinkedInArticleScorer(dspy.Module):
         return dspy.Prediction(output=score_model)
 
 
+def prepare_criteria_json() -> str:
+    """
+    Prepare the scoring criteria as a JSON string for the LLM.
+
+    Returns:
+        JSON string containing all criteria with structure and weights
+    """
+    import json
+
+    # Create a structured representation of criteria for the LLM
+    criteria_structure = {}
+    criterion_counter = 1
+
+    for category_name, criteria in SCORING_CRITERIA.items():
+        criteria_structure[category_name] = {
+            "criteria": [],
+            "total_points": sum(c.get("points", 5) for c in criteria),
+        }
+
+        for criterion in criteria:
+            criterion_data = {
+                "id": f"Q{criterion_counter}",
+                "question": criterion["question"],
+                "points": criterion.get("points", 5),
+                "scale": criterion["scale"],
+            }
+            criteria_structure[category_name]["criteria"].append(criterion_data)
+            criterion_counter += 1
+
+    return json.dumps(criteria_structure, indent=2)
+
+
 class ComprehensiveLinkedInArticleJudge(dspy.Module):
     """
     🎯 COMPREHENSIVE LINKEDIN ARTICLE JUDGE - Complete Judging with Analysis
@@ -780,12 +803,102 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         # Initialize the underlying fast scorer
         self.scorer = FastLinkedInArticleScorer(models)
 
-        # Import dependencies for analysis
-        from criteria_extractor import CriteriaExtractor
-        from word_count_manager import WordCountManager
+        # AB judge
+        self.best_version = dspy.ChainOfThought(ABArticleScorer)
 
         self.criteria_extractor = CriteriaExtractor()
         self.word_count_manager = WordCountManager(min_length, max_length)
+
+    def compare_versions(
+        self, article_versions: List[ArticleVersion]
+    ) -> Optional[ArticleVersion]:
+        """
+        Judge an article and return complete judgement with improvement guidance.
+
+        Args:
+            versions: List of ArticleVersion objects
+
+        Returns:
+            ArticleVersion to return or None if to continue judging latest version
+        """
+
+        # Extract the latest and previous versions
+        if len(article_versions) < 2:
+            return None  # Need at least two versions to compare
+
+        latest_version = article_versions[-1]
+        previous_version = article_versions[-2]
+
+        # randomly choose one of the versions to be article_a and the other to be article_b
+
+        if random.choice([True, False]):
+            article_a = latest_version.content
+            article_b = previous_version.content
+            latest_is_a = True
+        else:
+            article_a = previous_version.content
+            article_b = latest_version.content
+            latest_is_a = False
+
+        scoring_criteria = prepare_criteria_json()
+
+        judge_result = self.best_version(
+            article_a=article_a,
+            article_b=article_b,
+            scoring_criteria_json=scoring_criteria,
+        )
+
+        # Extract comparison result from the new structured output
+        comparison_result = judge_result.output.comparison_result
+        reasoning = judge_result.output.reasoning
+
+        # Determine which version is better based on the comparison result
+        if comparison_result == "A_better":
+            if latest_is_a:
+                latest_best = True
+            else:
+                latest_best = False
+        elif comparison_result == "B_better":
+            if latest_is_a:
+                latest_best = False
+            else:
+                latest_best = True
+        elif comparison_result == "no_difference":
+            # No real difference - keep previous version as requested
+            latest_best = False
+        else:
+            # Fallback to previous version if unexpected result
+            latest_best = False
+
+        if latest_best:
+            overall_feedback = [
+                "The latest version is better for the following reasons."
+            ]
+            overall_feedback.append(reasoning)
+            latest_version.judgement.overall_feedback = "\n".join(overall_feedback)
+            return None  # Keep the latest version
+        else:
+            # Previous article is best OR no real difference, keep previous version
+            if comparison_result == "no_difference":
+                overall_feedback = [
+                    "No real difference between versions - keeping previous version as requested."
+                ]
+            else:
+                overall_feedback = [
+                    "The previous version is better for the following reasons."
+                ]
+            overall_feedback.append(reasoning)
+            overall_feedback.append("We are keeping the previous version.")
+
+            judgement = previous_version.judgement
+            judgement.overall_feedback = "\n".join(overall_feedback)
+            judgement.meets_requirements = True
+
+            latest_version.content = previous_version.content
+            latest_version.judgement = judgement
+            latest_version.context = previous_version.context
+
+            return latest_version
 
     def forward(self, article_versions: List[ArticleVersion]) -> dspy.Prediction:
         """
@@ -822,10 +935,17 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
                 overall_feedback="Pending Judging while word length is acceptable.",
             )
 
-            return dspy.Prediction(output=length_judgement)
+            latest_version.judgement = length_judgement
+            return dspy.Prediction(output=latest_version)
 
         # Proceed with full scoring if length is acceptable
-        # Get scoring results from the fast scorer
+
+        # First check if the previous version was better
+        judge_previous = self.compare_versions(article_versions)
+        if judge_previous:
+            return dspy.Prediction(output=judge_previous)
+
+        # Latest version is best, proceed to score it
         score_prediction = self.scorer(article_text)
         score_results = score_prediction.output
 
@@ -847,19 +967,25 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
             focus_areas = improvement_analysis["focus_summary"]
 
         # Create the judgement model
-        judgement = JudgementModel(
-            total_score=score_results.total_score,
-            max_score=score_results.max_score,
-            percentage=score_results.percentage,
-            performance_tier=score_results.performance_tier,
-            word_count=word_count,
-            meets_requirements=quality_achieved,
-            improvement_prompt=improvement_prompt,
-            focus_areas=focus_areas,
-            overall_feedback=score_results.overall_feedback,
+        judgement = latest_version.judgement
+
+        judgement.total_score = score_results.total_score
+        judgement.max_score = score_results.max_score
+        judgement.percentage = score_results.percentage
+        judgement.performance_tier = score_results.performance_tier
+        judgement.word_count = word_count
+        judgement.meets_requirements = quality_achieved
+        judgement.improvement_prompt = improvement_prompt
+        judgement.focus_areas = focus_areas
+        # Append to overall feedback with scoring results
+        judgement.overall_feedback = (
+            (judgement.overall_feedback + "\n\n" + score_results.overall_feedback)
+            if judgement.overall_feedback
+            else score_results.overall_feedback
         )
 
-        return dspy.Prediction(output=judgement)
+        latest_version.judgement = judgement
+        return dspy.Prediction(output=latest_version)
 
     def _analyze_improvement_needs(
         self, score_results: ArticleScoreModel, current_article: str, word_count: int
@@ -1439,6 +1565,311 @@ def print_score_report(score) -> None:
         print()
 
     print("=" * 80)
+
+
+class CriteriaExtractor:
+    """
+    Dynamically extracts and processes scoring criteria from li_article_judge.py.
+
+    This class provides methods to parse the SCORING_CRITERIA dictionary and convert
+    it into formats suitable for article generation and improvement guidance.
+    """
+
+    def __init__(self):
+        """Initialize the criteria extractor with current scoring criteria."""
+        self.criteria = SCORING_CRITERIA
+        self._criteria_summary = None
+        self._category_weights = None
+
+    def get_criteria_summary(self) -> str:
+        """
+        Generate a comprehensive summary of scoring criteria for article generation.
+
+        Returns:
+            str: Formatted summary of all scoring criteria with weights and requirements
+        """
+        if self._criteria_summary is None:
+            self._criteria_summary = self._build_criteria_summary()
+        return self._criteria_summary
+
+    def get_category_weights(self) -> Dict[str, int]:
+        """
+        Calculate total point weights for each scoring category.
+
+        Returns:
+            Dict[str, int]: Category names mapped to their total point values
+        """
+        if self._category_weights is None:
+            self._category_weights = self._calculate_category_weights()
+        return self._category_weights
+
+    def get_improvement_guidelines(self, score_results: ArticleScoreModel) -> str:
+        """
+        Convert scoring feedback into actionable improvement guidelines.
+
+        Args:
+            score_results: ArticleScoreModel with detailed scoring breakdown
+
+        Returns:
+            str: Specific improvement guidelines based on scoring weaknesses
+        """
+        guidelines = []
+        guidelines.append("=== IMPROVEMENT GUIDELINES ===\n")
+
+        # Analyze category performance
+        category_weights = self.get_category_weights()
+        weak_categories = []
+
+        for category, results in score_results.category_scores.items():
+            category_total = sum(r.score for r in results)
+            category_max = category_weights.get(category, 0)
+            category_percentage = (
+                (category_total / category_max * 100) if category_max > 0 else 0
+            )
+
+            if category_percentage < 70:  # Below 70% performance
+                weak_categories.append((category, category_percentage, results))
+
+        # Sort by performance (worst first)
+        weak_categories.sort(key=lambda x: x[1])
+
+        if weak_categories:
+            guidelines.append("PRIORITY IMPROVEMENT AREAS:\n")
+
+            for i, (category, percentage, results) in enumerate(weak_categories[:3], 1):
+                guidelines.append(f"{i}. {category} ({percentage:.1f}% performance)")
+                guidelines.append(f"   Weight: {category_weights[category]} points")
+
+                # Add specific criterion feedback
+                for result in results:
+                    if result.score < 3:  # Below average criterion
+                        guidelines.append(f"   • {result.criterion}")
+                        guidelines.append(f"     Current: {result.score} points")
+                        guidelines.append(f"     Issue: {result.reasoning}")
+                        guidelines.append(f"     Action: {result.suggestions}")
+
+                guidelines.append("")
+
+        # Add general improvement strategies
+        guidelines.append("GENERAL IMPROVEMENT STRATEGIES:")
+        guidelines.append("• Focus on the highest-weighted categories first")
+        guidelines.append("• Ensure each criterion is explicitly addressed")
+        guidelines.append("• Use specific examples and evidence")
+        guidelines.append("• Maintain professional LinkedIn tone")
+
+        return "\n".join(guidelines)
+
+    def get_high_priority_criteria(self) -> List[Tuple[str, str, int]]:
+        """
+        Get the highest-weighted criteria for focused improvement.
+
+        Returns:
+            List[Tuple[str, str, int]]: (category, question, points) for high-priority criteria
+        """
+        high_priority = []
+
+        for category, criteria_list in self.criteria.items():
+            for criterion in criteria_list:
+                points = criterion.get("points", 5)
+                if points >= 15:  # High-value criteria
+                    high_priority.append((category, criterion["question"], points))
+
+        # Sort by points (highest first)
+        high_priority.sort(key=lambda x: x[2], reverse=True)
+        return high_priority
+
+    def get_criteria_for_generation(self) -> str:
+        """
+        Get criteria formatted specifically for article generation prompts.
+
+        Returns:
+            str: Criteria formatted for LLM generation prompts
+        """
+        generation_prompt = []
+        generation_prompt.append("SCORING CRITERIA FOR ARTICLE GENERATION:")
+        generation_prompt.append("Your article will be evaluated on these criteria:\n")
+
+        category_weights = self.get_category_weights()
+
+        # Sort categories by weight (highest first)
+        sorted_categories = sorted(
+            category_weights.items(), key=lambda x: x[1], reverse=True
+        )
+
+        for category, total_points in sorted_categories:
+            generation_prompt.append(f"**{category}** ({total_points} points total):")
+
+            criteria_list = self.criteria[category]
+            for criterion in criteria_list:
+                points = criterion.get("points", 5)
+                question = criterion["question"]
+
+                generation_prompt.append(f"  • ({points} pts) {question}")
+
+                # Add scale guidance for high-value criteria
+                if points >= 15:
+                    scale = criterion.get("scale", {})
+                    if scale:
+                        generation_prompt.append(
+                            f"    Scale: {scale.get(5, 'Excellent performance')}"
+                        )
+
+            generation_prompt.append("")
+
+        generation_prompt.append("OPTIMIZATION PRIORITIES:")
+        generation_prompt.append(
+            "1. Focus heavily on Strategic Deconstruction & Synthesis (75 points)"
+        )
+        generation_prompt.append("2. Emphasize First-Order Thinking (45 points)")
+        generation_prompt.append(
+            "3. Ensure strong engagement and professional authority"
+        )
+        generation_prompt.append("4. Target 2000-2500 words for optimal length")
+
+        return "\n".join(generation_prompt)
+
+    def _build_criteria_summary(self) -> str:
+        """Build comprehensive criteria summary for internal use."""
+        summary = []
+        summary.append("LINKEDIN ARTICLE SCORING CRITERIA SUMMARY")
+        summary.append("=" * 50)
+
+        total_points = sum(self.get_category_weights().values())
+        summary.append(f"Total Possible Score: {total_points} points")
+        summary.append(f"Target Score: ≥89% ({int(total_points * 0.89)} points)")
+        summary.append("")
+
+        # Add category breakdown
+        for category, criteria_list in self.criteria.items():
+            category_points = sum(c.get("points", 5) for c in criteria_list)
+            summary.append(f"{category}: {category_points} points")
+
+            for i, criterion in enumerate(criteria_list, 1):
+                points = criterion.get("points", 5)
+                question = criterion["question"]
+                summary.append(f"  {i}. ({points} pts) {question}")
+
+            summary.append("")
+
+        return "\n".join(summary)
+
+    def _calculate_category_weights(self) -> Dict[str, int]:
+        """Calculate total points for each category."""
+        weights = {}
+
+        for category, criteria_list in self.criteria.items():
+            total_points = sum(
+                criterion.get("points", 5) for criterion in criteria_list
+            )
+            weights[category] = total_points
+
+        return weights
+
+    def get_total_possible_score(self) -> int:
+        """Get the total possible score across all criteria."""
+        return sum(self.get_category_weights().values())
+
+    def get_target_score(self, target_percentage: float) -> int:
+        """
+        Calculate target score based on percentage.
+
+        Args:
+            target_percentage: Target percentage for world-class articles
+
+        Returns:
+            int: Target score in points
+        """
+        total_possible = self.get_total_possible_score()
+        return int(total_possible * (target_percentage / 100))
+
+    def analyze_score_gaps(
+        self, score_results: ArticleScoreModel, target_percentage: float = 89.0
+    ) -> Dict[str, Any]:
+        """
+        Analyze gaps between current and target scores.
+
+        Args:
+            score_results: Current scoring results
+            target_percentage: Target percentage for analysis
+
+        Returns:
+            Dict with gap analysis including priority areas for improvement
+        """
+        category_weights = self.get_category_weights()
+        target_total = self.get_target_score(target_percentage)
+        current_total = score_results.total_score
+
+        gap_analysis = {
+            "total_gap": target_total - current_total,
+            "current_percentage": score_results.percentage,
+            "target_percentage": target_percentage,
+            "category_gaps": {},
+            "priority_categories": [],
+        }
+
+        # Analyze each category
+        for category, results in score_results.category_scores.items():
+            category_current = sum(r.score for r in results)
+            category_max = category_weights.get(category, 0)
+            category_target = int(category_max * (target_percentage / 100))
+            category_gap = category_target - category_current
+
+            gap_analysis["category_gaps"][category] = {
+                "current": category_current,
+                "target": category_target,
+                "gap": category_gap,
+                "max_possible": category_max,
+                "percentage": (
+                    (category_current / category_max * 100) if category_max > 0 else 0
+                ),
+            }
+
+            # Add to priority list if significant gap
+            if category_gap > 0:
+                gap_analysis["priority_categories"].append(
+                    {
+                        "category": category,
+                        "gap": category_gap,
+                        "weight": category_max,
+                        "impact_score": category_gap
+                        * category_max,  # Gap weighted by category importance
+                    }
+                )
+
+        # Sort priority categories by impact score
+        gap_analysis["priority_categories"].sort(
+            key=lambda x: x["impact_score"], reverse=True
+        )
+
+        return gap_analysis
+
+
+# Convenience function for quick access
+def get_current_criteria_summary() -> str:
+    """Get a quick summary of current scoring criteria."""
+    extractor = CriteriaExtractor()
+    return extractor.get_criteria_summary()
+
+
+if __name__ == "__main__":
+    # Test the criteria extractor
+    extractor = CriteriaExtractor()
+
+    print("=== CRITERIA EXTRACTOR TEST ===")
+    print("\nCategory Weights:")
+    for category, weight in extractor.get_category_weights().items():
+        print(f"  {category}: {weight} points")
+
+    print(f"\nTotal Possible Score: {extractor.get_total_possible_score()}")
+    print(f"Target Score (89%): {extractor.get_target_score(89.0)}")
+
+    print("\nHigh Priority Criteria:")
+    for category, question, points in extractor.get_high_priority_criteria():
+        print(f"  {points} pts - {category}: {question[:60]}...")
+
+    print("\n" + "=" * 50)
+    print("CRITERIA FOR GENERATION:")
+    print(extractor.get_criteria_for_generation())
 
 
 # ==========================================================================

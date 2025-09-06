@@ -799,6 +799,7 @@ class LinkedInArticleGenerator:
                 self.word_count_manager.target_min,
                 self.word_count_manager.target_max,
             ),
+            overall_feedback=judgement.overall_feedback,
         )
         print(dashboard)
 

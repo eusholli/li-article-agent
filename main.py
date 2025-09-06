@@ -351,6 +351,7 @@ The future will likely be hybrid, combining the best of both worlds.
                 target_score=args.target_score,
                 word_count=result["word_count"],
                 target_range=(args.word_count_min, args.word_count_max),
+                overall_feedback=result["final_score"].overall_feedback,
             )
             print(final_dashboard)
         else:

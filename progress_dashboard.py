@@ -37,6 +37,7 @@ class ProgressDashboard:
         target_score: float = 89.0,
         word_count: Optional[int] = None,
         target_range: Optional[tuple] = None,
+        overall_feedback: Optional[str] = None,
     ) -> str:
         """
         Generate a complete progress dashboard with visual elements.
@@ -74,6 +75,13 @@ class ProgressDashboard:
         # Business impact
         impact = self.business_impact.get(tier_name, "Analyzing impact...")
         dashboard_parts.append(f"💼 Business Impact: {impact}")
+
+        # Overall feedback if provided
+        if overall_feedback:
+            dashboard_parts.append("")
+            dashboard_parts.append("💬 Overall Feedback:")
+            dashboard_parts.append("-" * 30)
+            dashboard_parts.append(overall_feedback)
 
         return "\n".join(dashboard_parts)
 

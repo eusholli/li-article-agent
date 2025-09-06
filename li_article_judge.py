@@ -1724,7 +1724,6 @@ class CriteriaExtractor:
         generation_prompt.append(
             "3. Ensure strong engagement and professional authority"
         )
-        generation_prompt.append("4. Target 2000-2500 words for optimal length")
 
         return "\n".join(generation_prompt)
 

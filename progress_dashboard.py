@@ -88,9 +88,6 @@ class ProgressDashboard:
     def generate_iteration_preview(
         self,
         current_score: float,
-        predicted_improvement: float,
-        focus_areas: list,
-        time_estimate: str = "2-3 minutes",
     ) -> str:
         """
         Generate preview of what the next iteration will improve.
@@ -106,28 +103,17 @@ class ProgressDashboard:
         """
         preview_parts = []
 
-        new_score = min(100, current_score + predicted_improvement)
         preview_parts.append(
             f"Your article is {current_score:.1f}% complete. Next iteration will improve:"
         )
-        preview_parts.append("")
-
-        preview_parts.append("🎯 Primary Focus Areas:")
-        for area in focus_areas[:3]:  # Show top 3
-            preview_parts.append(f"  • {area}")
-        preview_parts.append("")
-
-        preview_parts.append(
-            f"📈 Expected Improvement: +{predicted_improvement:.1f} points ({current_score:.1f}% → {new_score:.1f}%)"
-        )
-        preview_parts.append(f"⏱️  Time Estimate: {time_estimate}")
         preview_parts.append("")
 
         # Decision options
         preview_parts.append("Choose your next action:")
         preview_parts.append("  1. ✅ Proceed with these improvements")
         preview_parts.append("  2. ✏️  Add specific instructions for this iteration")
-        preview_parts.append("  3. 🏁 Finish with current version")
+        preview_parts.append("  3. 💾 Export all versions to directory")
+        preview_parts.append("  4. 🏁 Finish with current version")
 
         return "\n".join(preview_parts)
 
@@ -204,7 +190,7 @@ class UserInteractionManager:
         self.dashboard = dashboard
 
     def get_contextual_decision_prompt(
-        self, current_score: float, improvement_prompt: str, focus_areas: list
+        self, current_score: float, improvement_prompt: str
     ) -> str:
         """
         Generate a contextual decision prompt based on current state.
@@ -218,41 +204,9 @@ class UserInteractionManager:
             Formatted decision prompt
         """
         # Predict improvement impact (simplified estimation)
-        predicted_improvement = self._estimate_improvement_impact(focus_areas)
 
         preview = self.dashboard.generate_iteration_preview(
             current_score=current_score,
-            predicted_improvement=predicted_improvement,
-            focus_areas=focus_areas,
         )
 
         return preview
-
-    def _estimate_improvement_impact(self, focus_areas: list) -> float:
-        """
-        Estimate the potential improvement impact based on focus areas.
-
-        Args:
-            focus_areas: List of improvement areas
-
-        Returns:
-            Estimated percentage improvement
-        """
-        # Simplified impact estimation based on focus area priority
-        base_impact = 8.0  # Base improvement
-
-        # Add bonuses for high-impact areas
-        high_impact_areas = [
-            "first-order thinking",
-            "strategic deconstruction",
-            "authority & credibility",
-            "idea density",
-        ]
-
-        bonus = sum(
-            2.0
-            for area in focus_areas
-            if any(high_impact in area.lower() for high_impact in high_impact_areas)
-        )
-
-        return min(base_impact + bonus, 15.0)  # Cap at 15 points

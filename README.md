@@ -19,6 +19,9 @@ python main.py --file my_draft.txt
 
 # Customize target score and iterations
 python main.py --target-score 85 --max-iterations 5
+
+# Specify export directory for article versions
+python main.py --export-dir my_articles
 ```
 
 ## System Overview
@@ -148,6 +151,11 @@ python main.py \
   --output generated_article.md \
   --export-results generation_results.json
 
+# Export all article versions to a directory
+python main.py \
+  --export-dir article_versions \
+  --file draft.txt
+
 # Quiet mode (minimal output)
 python main.py --quiet --file draft.txt --output article.md
 
@@ -168,6 +176,7 @@ python main.py --file draft.txt  # Shows user-friendly progress and decision pro
 --judge-model            LLM model for article scoring (default: openrouter/deepseek/deepseek-r1-0528:free)
 --rag-model              LLM model for web search/retrieval (default: openrouter/deepseek/deepseek-r1-0528:free)
 --output, -o             Output file path for generated article
+--export-dir             Directory name to save all generated versions to (automatic numbering if exists)
 --export-results         Export detailed results to JSON file
 --quiet, -q              Suppress progress messages
 ```

@@ -12,6 +12,8 @@ import json
 import time
 import re
 import asyncio
+import os
+from pathlib import Path
 
 from models import ArticleVersion, JudgementModel
 from li_article_judge import ComprehensiveLinkedInArticleJudge, CriteriaExtractor
@@ -26,7 +28,7 @@ class ArticleGenerationSignature(dspy.Signature):
     """Generate a complete LinkedIn article in markdown format with these requirements:
 
     WORD LENGTH REQUIREMENT:
-    - The top priority is to meet the specified article_length range
+    - The top priority is to to generate an article of the wanted length range
     - If expansion is needed, focus on areas that improve both length and quality
     - If condensation is needed, preserve all key insights and arguments
     - Use the scoring criteria to strategically adjust content length while maintaining article quality
@@ -50,9 +52,6 @@ class ArticleGenerationSignature(dspy.Signature):
     - Objective and third-person, with a more structured, business/technical tone
     - Address all key points from the original draft"""
 
-    article_length: str = dspy.InputField(
-        desc="The required length range of the wanted article in words"
-    )
     original_draft: str = dspy.InputField(
         desc="Original draft to expand on key points if necessary",
     )
@@ -71,7 +70,7 @@ class ArticleGenerationSignature(dspy.Signature):
 class ArticleImprovementSignature(dspy.Signature):
     """Improve an existing article based on scoring feedback and criteria while maintaining consistency with original draft.
     WORD LENGTH REQUIREMENT:
-    - The top priority is to meet the specified article_length range
+    - The top priority is to to generate an article of the wanted length range
     - If expansion is needed, focus on areas that improve both length and quality
     - If condensation is needed, preserve all key insights and arguments
     - Use the scoring criteria to strategically adjust content length while maintaining article quality
@@ -95,9 +94,6 @@ class ArticleImprovementSignature(dspy.Signature):
     - Objective and third-person, with a more structured, business/technical tone
     - Address all key points from the original draft"""
 
-    article_length = dspy.InputField(
-        desc="The required length range of the wanted article in words"
-    )
     current_article = dspy.InputField(desc="Current version of the article")
     original_draft = dspy.InputField(
         desc="Original draft for reference to maintain key points"
@@ -109,8 +105,6 @@ class ArticleImprovementSignature(dspy.Signature):
     score_feedback = dspy.InputField(
         desc="Detailed scoring feedback and improvement suggestions"
     )
-    scoring_criteria = dspy.InputField(desc="Complete scoring criteria for reference")
-    improvement_focus = dspy.InputField(desc="Specific areas to focus improvement on")
 
     improved_article = dspy.OutputField(
         desc="The improved article meeting all the above requirements."
@@ -167,10 +161,6 @@ class LinkedInArticleGenerator:
             if judgement.improvement_prompt:
                 print(f"\n🔍 IMPROVEMENT GUIDANCE:")
                 print(f"  {judgement.improvement_prompt}")
-
-            if judgement.focus_areas:
-                print(f"\n🎯 FOCUS AREAS:")
-                print(f"  {judgement.focus_areas}")
 
             print(f"  • Version: {version.version}")
             print(
@@ -288,6 +278,7 @@ class LinkedInArticleGenerator:
         models: Dict[str, DspyModelConfig],
         recreate_ctx: bool = False,
         auto: bool = False,
+        export_dir: Optional[str] = None,
     ):
         """
         Initialize the LinkedIn Article Generator.
@@ -324,7 +315,9 @@ class LinkedInArticleGenerator:
             max_length=word_count_max,
             passing_score_percentage=target_score_percentage,
         )
-        self.criteria_extractor = CriteriaExtractor()
+        self.criteria_extractor = CriteriaExtractor(
+            min_length=word_count_min, max_length=word_count_max
+        )
 
         self.word_count_manager = WordCountManager(word_count_min, word_count_max)
 
@@ -340,6 +333,7 @@ class LinkedInArticleGenerator:
         self.original_draft: Optional[str] = None
         self.recreate_ctx = recreate_ctx
         self.auto = auto
+        self.export_dir = export_dir
 
     def _perform_rag_search(self, draft_text: str, verbose: bool = True) -> str:
         """
@@ -412,7 +406,30 @@ class LinkedInArticleGenerator:
         if context and verbose:
             print(f"🌐 Using web context: {len(context)} URLs")
 
-        # Generate initial markdown article from draft/outline (Version 1)
+        # Store draft version with a pending judgement
+        draft_judgement = JudgementModel(
+            total_score=0,
+            max_score=100,
+            percentage=0.0,
+            performance_tier="User provided draft",
+            word_count=self.word_count_manager.count_words(initial_draft),
+            meets_requirements=False,
+            improvement_prompt="There is no improvement guidance since this is the user-provided draft, that will not be judged.",
+            overall_feedback=None,  # Optional field for comprehensive feedback
+        )
+
+        # Create a temporary version for judging
+        draft_version = ArticleVersion(
+            version=self.iteration,
+            content=initial_draft,
+            context="",
+            recreate_ctx=self.recreate_ctx,
+            judgement=draft_judgement,
+        )
+
+        self.versions.append(draft_version)
+        # self.iteration += 1
+
         if verbose:
             self.verbose_manager.print_generation_phase(
                 "Generating initial markdown article from draft"
@@ -421,31 +438,6 @@ class LinkedInArticleGenerator:
         initial_article, initial_context = self._generate_initial_article(
             initial_draft, context, verbose
         )
-
-        # Store initial version with a pending judgement
-        proxy_judgement = JudgementModel(
-            total_score=0,
-            max_score=100,
-            percentage=0.0,
-            performance_tier="User provided draft",
-            word_count=self.word_count_manager.count_words(initial_draft),
-            meets_requirements=False,
-            improvement_prompt="There is no improvement guidance since this is the user-provided draft, that will not be judged.",
-            focus_areas="Pending analysis - temporary placeholder for focus areas",
-            overall_feedback=None,  # Optional field for comprehensive feedback
-        )
-
-        # Create a temporary version for judging
-        initial_version = ArticleVersion(
-            version=self.iteration,
-            content=initial_draft,
-            context=initial_context,
-            recreate_ctx=self.recreate_ctx,
-            judgement=proxy_judgement,
-        )
-
-        self.versions.append(initial_version)
-        self.iteration += 1
 
         # Start iterative improvement process with the generated article
         final_result = self._iterative_improvement_process(
@@ -464,6 +456,7 @@ class LinkedInArticleGenerator:
         current_article = initial_article
         current_context = initial_context
         user_instructions = ""  # Track user-provided instructions
+        finish_requested = False  # Track if user requested to finish early
 
         # Ensure at least one iteration runs to get a judgement
         while self.iteration < max(1, self.max_iterations):
@@ -484,7 +477,6 @@ class LinkedInArticleGenerator:
                 word_count=len(current_article.split()),  # Quick word count estimate
                 meets_requirements=False,
                 improvement_prompt="Pending analysis - this is a temporary placeholder that will be replaced with actual improvement guidance from the comprehensive judge.",
-                focus_areas="Pending analysis - temporary placeholder for focus areas",
                 overall_feedback=None,  # Optional field for comprehensive feedback
             )
 
@@ -517,18 +509,35 @@ class LinkedInArticleGenerator:
                 # In non-auto mode, always print iteration status
                 self.verbose_manager.print_iteration_status(self.iteration, version)
 
-                user_decision = self._get_user_decision(version)
-                if user_decision == "finish":
-                    break
-                elif user_decision == "instructions":
-                    user_instructions = self._get_user_instructions()
-                    # Prepend user instructions to judge's improvement prompt if provided
-                    if user_instructions:
-                        judgement.improvement_prompt = f"""THESE ARE NEW INSTRUCTIONS:
+                keep_asking = True
+                while keep_asking:
+
+                    user_decision = self._get_user_decision(version)
+
+                    if user_decision == "finish":
+                        keep_asking = False  # Default to not asking again
+                        # break out of loop while self.iteration < max(1, self.max_iterations): to finish
+                        if verbose:
+                            print("🏁 User chose to finish the generation process.")
+                        finish_requested = True
+
+                    elif user_decision == "instructions":
+                        keep_asking = False
+                        user_instructions = self._get_user_instructions()
+                        # Prepend user instructions to judge's improvement prompt if provided
+                        if user_instructions:
+                            judgement.improvement_prompt = f"""THESE ARE NEW INSTRUCTIONS:
 <NEW>
 {user_instructions}
 <NEW/>"""
-                # Continue with improvement if "continue" or "instructions" was selected
+                    elif user_decision == "export":
+                        self._export_versions_to_directory(self.export_dir)
+                        continue  # Return to menu after export
+                    # Continue with improvement if "continue" or "instructions" was selected
+                    elif user_decision == "continue":
+                        keep_asking = False  # Exit the loop to continue improving
+                    else:
+                        print("⚠️ Invalid choice, please try again.")
             else:
 
                 # Check if targets are achieved using the judge's decision
@@ -541,11 +550,15 @@ class LinkedInArticleGenerator:
                     self.generation_log.append(
                         f"Iteration {self.iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
                     )
+
                     break  # Exit loop if both targets are met
 
                 else:
                     if verbose:
-                        print(f"⚠️ Targets not yet achieved: {judgement.focus_areas}")
+                        f"⚠️ Iteration {self.iteration}: Targets not yet achieved: (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
+
+            if finish_requested:
+                break
 
             # Generate improved version using the judge's improvement prompt
             if verbose:
@@ -561,6 +574,12 @@ class LinkedInArticleGenerator:
 
             current_article = improved_article
             current_context = used_context
+
+        # Auto-export if export_dir is specified and we have versions to export
+        if self.export_dir and self.versions:
+            if verbose:
+                print(f"💾 Auto-exporting versions to '{self.export_dir}' directory...")
+            self._export_versions_to_directory(self.export_dir)
 
         # Final scoring
         final_judgement = self.versions[-1].judgement
@@ -646,7 +665,6 @@ class LinkedInArticleGenerator:
             # Generate initial article with comprehensive RAG context
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.generator(
-                    article_length=article_length,
                     original_draft=draft_or_outline,
                     context=context,
                     scoring_criteria=scoring_criteria,
@@ -706,7 +724,6 @@ class LinkedInArticleGenerator:
                 "feedback": judgement.improvement_prompt,
                 "criteria": scoring_criteria,
                 "guidance": article_length,
-                "focus": judgement.focus_areas,
             }
 
             try:
@@ -721,13 +738,10 @@ class LinkedInArticleGenerator:
             # Generate improved article using judge's improvement prompt
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.improver(
-                    article_length=article_length,
                     current_article=current_article,
                     original_draft=self._get_original_draft(),
                     context=context,
                     score_feedback=judgement.improvement_prompt,
-                    scoring_criteria=scoring_criteria,
-                    improvement_focus=judgement.focus_areas,
                 )
 
             return result.improved_article, context
@@ -780,10 +794,6 @@ class LinkedInArticleGenerator:
             print("\n🔧 IMPROVEMENT PROMPT:")
             print(f"  {judgement.improvement_prompt}")
 
-        if judgement.focus_areas:
-            print("\n🎯 FOCUS AREAS:")
-            print(f"  {judgement.focus_areas}")
-
         print("=" * 60)
 
     def _get_user_decision(self, version: "ArticleVersion") -> str:
@@ -803,30 +813,25 @@ class LinkedInArticleGenerator:
         )
         print(dashboard)
 
-        # Generate contextual decision prompt
-        focus_areas = (
-            judgement.focus_areas.split(", ")
-            if judgement.focus_areas
-            else ["General improvements"]
-        )
         prompt = self.interaction_manager.get_contextual_decision_prompt(
             current_score=judgement.percentage,
             improvement_prompt=judgement.improvement_prompt,
-            focus_areas=focus_areas,
         )
         print(prompt)
 
         while True:
             try:
-                choice = input("Enter your choice (1, 2, or 3): ").strip().lower()
+                choice = input("Enter your choice (1, 2, 3, or 4): ").strip().lower()
                 if choice in ["1", "proceed", "p"]:
                     return "continue"
                 elif choice in ["2", "add", "a", "instructions", "i"]:
                     return "instructions"
-                elif choice in ["3", "finish", "f"]:
+                elif choice in ["3", "export", "e"]:
+                    return "export"
+                elif choice in ["4", "finish", "f"]:
                     return "finish"
                 else:
-                    print("Please enter '1', '2', or '3'")
+                    print("Please enter '1', '2', '3', or '4'")
             except KeyboardInterrupt:
                 print("\nOperation cancelled by user.")
                 return "finish"
@@ -913,6 +918,242 @@ class LinkedInArticleGenerator:
             history.append(version_info)
 
         return history
+
+    def _resolve_directory_name(self, base_name: str) -> str:
+        """Resolve directory name with automatic numbering if conflicts exist.
+
+        Args:
+            base_name: The base directory name to use
+
+        Returns:
+            The resolved directory name (with numbering if needed)
+        """
+        if not os.path.exists(base_name):
+            return base_name
+
+        counter = 1
+        while True:
+            candidate = f"{base_name}-{counter}"
+            if not os.path.exists(candidate):
+                return candidate
+            counter += 1
+
+    def _export_versions_to_directory(self, directory_name: Optional[str] = None):
+        """Export all article versions to a user-specified directory.
+
+        Args:
+            directory_name: Optional directory name. If None, prompts user interactively.
+        """
+        print("\n💾 EXPORT ARTICLE VERSIONS")
+        print("-" * 40)
+
+        if not self.versions:
+            print("❌ No versions available to export")
+            return
+
+        # Get directory name - either from parameter or user input
+        if directory_name:
+            # Use command-line specified directory with automatic numbering
+            final_dir_name = self._resolve_directory_name(directory_name)
+            print(f"📁 Using directory: {final_dir_name}")
+        else:
+            # Interactive mode - get directory name from user
+            while True:
+                try:
+                    dir_name = input("Enter directory name for export: ").strip()
+                    if not dir_name:
+                        print("❌ Directory name cannot be empty")
+                        continue
+
+                    # Use automatic numbering for user input as well
+                    final_dir_name = self._resolve_directory_name(dir_name)
+                    if final_dir_name != dir_name:
+                        print(
+                            f"📁 Directory '{dir_name}' exists, using '{final_dir_name}' instead"
+                        )
+                    break
+
+                except KeyboardInterrupt:
+                    print("\n❌ Export cancelled")
+                    return
+                except Exception as e:
+                    print(f"❌ Error with directory name: {e}")
+                    return
+
+        # Create the directory
+        try:
+            os.makedirs(final_dir_name, exist_ok=True)
+        except Exception as e:
+            print(f"❌ Error creating directory '{final_dir_name}': {e}")
+            return
+
+        # Export each version
+        exported_count = 0
+        for version in self.versions:
+            filename = f"version-{version.version}.md"
+            filepath = os.path.join(final_dir_name, filename)
+
+            try:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    # Add version metadata header
+                    f.write(f"# Article Version {version.version}\n\n")
+                    f.write(f"**Generated:** {version.timestamp}\n")
+                    if version.judgement:
+                        f.write(
+                            f"**Score:** {version.judgement.percentage:.1f}% ({version.judgement.total_score}/{version.judgement.max_score})\n"
+                        )
+                        f.write(f"**Word Count:** {version.judgement.word_count}\n")
+                        f.write(
+                            f"**Performance Tier:** {version.judgement.performance_tier}\n"
+                        )
+                        if version.judgement.overall_feedback:
+                            f.write(
+                                f"**Feedback:** {version.judgement.overall_feedback}\n"
+                            )
+                    f.write("\n---\n\n")
+                    # Write the article content
+                    f.write(version.content)
+
+                exported_count += 1
+                print(f"✅ Exported {filename}")
+
+            except Exception as e:
+                print(f"❌ Failed to export {filename}: {e}")
+
+        # Create summary.md file for version comparison
+        self._create_summary_md(final_dir_name)
+
+        print(
+            f"\n🎉 Successfully exported {exported_count} versions to '{final_dir_name}' directory"
+        )
+        print("📂 Returning to main menu...")
+
+    def _create_summary_md(self, dir_name: str):
+        """Create a summary.md file with version comparison table."""
+        summary_path = os.path.join(dir_name, "summary.md")
+
+        try:
+            with open(summary_path, "w", encoding="utf-8") as f:
+                f.write("# Article Version Comparison Summary\n\n")
+
+                # Generation metadata
+                f.write("## Generation Overview\n\n")
+                f.write(f"- **Target Score:** ≥{self.target_score_percentage}%\n")
+                f.write(f"- **Max Iterations:** {self.max_iterations}\n")
+                f.write(
+                    f"- **Word Count Range:** {self.word_count_manager.target_min}-{self.word_count_manager.target_max}\n"
+                )
+                f.write(f"- **Total Versions:** {len(self.versions)}\n")
+                f.write(
+                    f"- **Final Score:** {self.versions[-1].judgement.percentage:.1f}%\n"
+                )
+                f.write(
+                    f"- **Final Word Count:** {self.versions[-1].judgement.word_count}\n\n"
+                )
+
+                # Version comparison table
+                f.write("## Version Comparison Table\n\n")
+                f.write(
+                    "| Version | Score | Percentage | Word Count | Performance Tier | Meets Requirements |\n"
+                )
+                f.write(
+                    "|---------|-------|------------|------------|------------------|-------------------|\n"
+                )
+
+                for version in self.versions:
+                    judgement = version.judgement
+                    if judgement:
+                        meets_req = (
+                            "✅ Yes" if judgement.meets_requirements else "❌ No"
+                        )
+                        f.write(
+                            f"| {version.version} | {judgement.total_score}/{judgement.max_score} | {judgement.percentage:.1f}% | {judgement.word_count} | {judgement.performance_tier} | {meets_req} |\n"
+                        )
+                    else:
+                        f.write(
+                            f"| {version.version} | N/A | N/A | N/A | N/A | N/A |\n"
+                        )
+
+                f.write("\n")
+
+                # Score progression chart
+                f.write("## Score Progression\n\n")
+                f.write("```\n")
+                max_score_width = 50
+                for version in self.versions:
+                    judgement = version.judgement
+                    if judgement:
+                        score_bar = "█" * int(
+                            (judgement.percentage / 100) * max_score_width
+                        )
+                        f.write(
+                            f"Version {version.version}: {score_bar} ({judgement.percentage:.1f}%)\n"
+                        )
+                f.write("```\n\n")
+
+                # Detailed version breakdown
+                f.write("## Detailed Version Analysis\n\n")
+                for version in self.versions:
+                    judgement = version.judgement
+                    if judgement:
+                        f.write(f"### Version {version.version}\n\n")
+                        f.write(
+                            f"- **Score:** {judgement.total_score}/{judgement.max_score} ({judgement.percentage:.1f}%)\n"
+                        )
+                        f.write(f"- **Word Count:** {judgement.word_count}\n")
+                        f.write(
+                            f"- **Performance Tier:** {judgement.performance_tier}\n"
+                        )
+                        f.write(
+                            f"- **Meets Requirements:** {'✅ Yes' if judgement.meets_requirements else '❌ No'}\n"
+                        )
+
+                        if judgement.overall_feedback:
+                            f.write(
+                                f"- **Overall Feedback:** {judgement.overall_feedback}\n"
+                            )
+
+                        if judgement.improvement_prompt and version.version < len(
+                            self.versions
+                        ):
+                            f.write(
+                                f"- **Improvement Prompt:** {judgement.improvement_prompt[:200]}{'...' if len(judgement.improvement_prompt) > 200 else ''}\n"
+                            )
+
+                        f.write(f"- **Generated:** {version.timestamp}\n\n")
+
+                # Improvement summary
+                if len(self.versions) > 1:
+                    improvement_summary = self._generate_improvement_summary()
+                    f.write("## Improvement Summary\n\n")
+                    f.write(
+                        f"- **Score Improvement:** +{improvement_summary['score_improvement']:.1f}%\n"
+                    )
+                    f.write(
+                        f"- **Word Count Change:** {improvement_summary['word_count_change']:+d} words\n"
+                    )
+                    f.write(
+                        f"- **Versions Created:** {improvement_summary['versions_created']}\n"
+                    )
+                    f.write(
+                        f"- **Target Achieved:** {'✅ Yes' if improvement_summary['target_achieved'] else '❌ No'}\n\n"
+                    )
+
+                # Generation log
+                f.write("## Generation Log\n\n")
+                for log_entry in self.generation_log:
+                    f.write(f"- {log_entry}\n")
+
+                f.write(
+                    "\n---\n\n*Generated on: "
+                    + time.strftime("%Y-%m-%d %H:%M:%S")
+                    + "*\n"
+                )
+
+            print("✅ Created summary.md with version comparison")
+
+        except Exception as e:
+            print(f"❌ Failed to create summary.md: {e}")
 
     def export_results(self, filepath: str):
         """Export generation results to JSON file."""

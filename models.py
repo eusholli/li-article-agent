@@ -61,10 +61,6 @@ class JudgementModel(BaseModel):
         min_length=50,
         description="Complete improvement prompt ready for ArticleImprovementSignature",
     )
-    focus_areas: str = Field(
-        ...,
-        description="Brief summary of focus areas for logging and progress tracking",
-    )
 
     overall_feedback: Optional[str] = Field(
         None, description="Comprehensive feedback (optional for detailed analysis)"

@@ -229,6 +229,10 @@ Target Scores:
         action="store_true",
         help="Run in automatic mode without user interaction (default: False)",
     )
+    parser.add_argument(
+        "--export-dir",
+        help="Directory name to save all generated versions to (automatic numbering if exists)",
+    )
 
     args = parser.parse_args()
 
@@ -330,6 +334,7 @@ The future will likely be hybrid, combining the best of both worlds.
             models=models,
             recreate_ctx=args.recreate_ctx,
             auto=args.auto,
+            export_dir=args.export_dir,
         )
 
         if not args.quiet:
@@ -385,11 +390,11 @@ The future will likely be hybrid, combining the best of both worlds.
             if final_score >= 72:
                 if not args.quiet:
                     print("⚠️  Warning: Article is strong but could be improved")
-                sys.exit(1)
+                sys.exit(0)
             else:
                 if not args.quiet:
                     print("❌ Article needs significant improvement before publishing")
-                sys.exit(2)
+                sys.exit(0)
 
     except KeyboardInterrupt:
         print("\n❌ Generation interrupted by user")

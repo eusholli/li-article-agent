@@ -32,6 +32,11 @@ import logging
 from word_count_manager import WordCountManager
 import random
 
+REGENERATION_PROMPTS = [
+    "I rejected your last version as it was judged to be no better than the previous one. This time, let's think about it differently.",
+    "I rejected your last version as it was judged to be no better than the previous one. This time, ask yourself the question 'What am I not seeing here?'",
+    "I rejected your last version as it was judged to be no better than the previous one. This time, ask yourself the question 'What else should the reader know?'",
+]
 
 # ==========================================================================
 # SECTION 1: DATA STRUCTURES
@@ -216,11 +221,12 @@ class ABComparisonOutput(BaseModel):
     ⚖️ PYDANTIC MODEL: DSPy Output for Article Comparison
 
     This Pydantic model defines the structured output format for the ABArticleScorer
-    DSPy signature. It supports three comparison outcomes: A better, B better, or no difference.
+    DSPy signature. It supports three comparison outcomes: latest better, previous better, or no difference.
     """
 
     comparison_result: str = Field(
-        ..., description="Comparison result: 'A_better', 'B_better', or 'no_difference'"
+        ...,
+        description="Comparison result: 'latest better', 'previous better', or 'no difference'",
     )
     reasoning: str = Field(
         ..., min_length=10, description="Detailed reasoning for the comparison result"
@@ -229,7 +235,7 @@ class ABComparisonOutput(BaseModel):
     @validator("comparison_result")
     def validate_result(cls, v):
         """Validate that comparison result is one of the expected values."""
-        valid_results = ["A_better", "B_better", "no_difference"]
+        valid_results = ["latest better", "previous better", "no difference"]
         if v not in valid_results:
             raise ValueError(f"Must be one of: {valid_results}")
         return v
@@ -563,18 +569,18 @@ class ABArticleScorer(dspy.Signature):
     CRITICAL INSTRUCTIONS:
     - Compare the two articles comprehensively using the scoring criteria
     - Return EXACTLY ONE of these three values in comparison_result:
-      * "A_better" - if Article A is clearly better than Article B
-      * "B_better" - if Article B is clearly better than Article A
-      * "no_difference" - if there is no real difference between the articles
-    - Only use "no_difference" when the articles are truly equivalent in quality
+      * "latest better" - if the latest article is clearly better than the previous article
+      * "previous better" - if the previous article is clearly better than the latest article
+      * "no difference" - if there is no real difference between the articles
+    - Only use "no difference" when the articles are truly equivalent in quality
     - Provide detailed reasoning explaining your choice
     """
 
-    article_a = dspy.InputField(
+    latest_version = dspy.InputField(
         desc="The first version of the LinkedIn article to evaluate"
     )
 
-    article_b = dspy.InputField(
+    previous_version = dspy.InputField(
         desc="The second version of the LinkedIn article to evaluate"
     )
 
@@ -583,7 +589,7 @@ class ABArticleScorer(dspy.Signature):
     )
 
     output: ABComparisonOutput = dspy.OutputField(
-        desc="Structured comparison result with result type and reasoning. Must use exactly one of: 'A_better', 'B_better', or 'no_difference'"
+        desc="Structured comparison result with result type and reasoning. Must use exactly one of: 'latest better', 'previous better', or 'no difference'"
     )
 
 
@@ -806,7 +812,7 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         # AB judge
         self.best_version = dspy.ChainOfThought(ABArticleScorer)
 
-        self.criteria_extractor = CriteriaExtractor()
+        self.criteria_extractor = CriteriaExtractor(min_length, max_length)
         self.word_count_manager = WordCountManager(min_length, max_length)
 
     def compare_versions(
@@ -843,8 +849,8 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         scoring_criteria = prepare_criteria_json()
 
         judge_result = self.best_version(
-            article_a=article_a,
-            article_b=article_b,
+            latest_version=latest_version.content,
+            previous_version=previous_version.content,
             scoring_criteria_json=scoring_criteria,
         )
 
@@ -853,17 +859,11 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         reasoning = judge_result.output.reasoning
 
         # Determine which version is better based on the comparison result
-        if comparison_result == "A_better":
-            if latest_is_a:
-                latest_best = True
-            else:
-                latest_best = False
-        elif comparison_result == "B_better":
-            if latest_is_a:
-                latest_best = False
-            else:
-                latest_best = True
-        elif comparison_result == "no_difference":
+        if comparison_result == "latest better":
+            latest_best = True
+        elif comparison_result == "previous better":
+            latest_best = False
+        elif comparison_result == "no difference":
             # No real difference - keep previous version as requested
             latest_best = False
         else:
@@ -890,8 +890,22 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
             overall_feedback.append(reasoning)
             overall_feedback.append("We are keeping the previous version.")
 
-            judgement = previous_version.judgement
+            # copy the previous version's judgement to the latest version
+            # but update the overall feedback to include the comparison reasoning
+            # and set meets_requirements to True since it was judged better
+            # even if it didn't meet requirements before
+            # This ensures the generator gets a complete judgement to work with
+            # and can focus on improvement guidance
+
+            # make a deep copy of the previous judgement to avoid mutating it
+            judgement = JudgementModel(**previous_version.judgement.dict())
             judgement.overall_feedback = "\n".join(overall_feedback)
+            # Randomly select one of the REGENERATION_PROMPTS to prepend
+            regeneration_prompt = random.choice(REGENERATION_PROMPTS)
+            judgement.improvement_prompt = (
+                regeneration_prompt + "\n\n" + judgement.improvement_prompt
+            )
+            # Set meets_requirements to True since we are keeping this version
             judgement.meets_requirements = True
 
             latest_version.content = previous_version.content
@@ -919,31 +933,11 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         length_status = self.word_count_manager.get_word_count_status(word_count)
         length_achieved = length_status["within_range"]
 
-        if not length_achieved:
-            improvement_prompt = self.criteria_extractor.get_criteria_for_generation()
-
-            # Create the judgement model
-            length_judgement = JudgementModel(
-                total_score=0,
-                max_score=100,
-                percentage=0.0,
-                performance_tier="Pending",
-                word_count=word_count,
-                meets_requirements=False,
-                improvement_prompt=improvement_prompt,
-                focus_areas="Pending Judging while word length is acceptable.",
-                overall_feedback="Pending Judging while word length is acceptable.",
-            )
-
-            latest_version.judgement = length_judgement
-            return dspy.Prediction(output=latest_version)
-
-        # Proceed with full scoring if length is acceptable
-
-        # First check if the previous version was better
-        judge_previous = self.compare_versions(article_versions)
-        if judge_previous:
-            return dspy.Prediction(output=judge_previous)
+        # Ensure there are at least two versions to compare
+        if len(article_versions) >= 2:
+            judge_previous = self.compare_versions(article_versions)
+            if judge_previous:
+                return dspy.Prediction(output=judge_previous)
 
         # Latest version is best, proceed to score it
         score_prediction = self.scorer(article_text)
@@ -954,17 +948,11 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         # meets_requirements = quality_achieved and length_achieved
 
         # Generate improvement analysis if needed
-        if quality_achieved:
-            improvement_prompt = (
-                "Article meets all requirements. No improvements needed."
-            )
-            focus_areas = "None - targets achieved"
-        else:
-            improvement_analysis = self._analyze_improvement_needs(
-                score_results, article_text, word_count
-            )
-            improvement_prompt = improvement_analysis["detailed_feedback"]
-            focus_areas = improvement_analysis["focus_summary"]
+        improvement_analysis = self._analyze_improvement_needs(
+            score_results, article_text, word_count
+        )
+        improvement_prompt = improvement_analysis["detailed_feedback"]
+        focus_areas = improvement_analysis["focus_summary"]
 
         # Create the judgement model
         judgement = latest_version.judgement
@@ -976,7 +964,6 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         judgement.word_count = word_count
         judgement.meets_requirements = quality_achieved
         judgement.improvement_prompt = improvement_prompt
-        judgement.focus_areas = focus_areas
         # Append to overall feedback with scoring results
         judgement.overall_feedback = (
             (judgement.overall_feedback + "\n\n" + score_results.overall_feedback)
@@ -997,14 +984,14 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
             score_results
         )
 
-        # Get gap analysis
-        gap_analysis = self.criteria_extractor.analyze_score_gaps(
-            score_results, self.passing_score_percentage
-        )
-
         # Get word count analysis
         length_analysis = self.word_count_manager.analyze_length_vs_quality_tradeoffs(
             word_count, score_results.percentage
+        )
+
+        """# Get gap analysis
+        gap_analysis = self.criteria_extractor.analyze_score_gaps(
+            score_results, self.passing_score_percentage
         )
 
         # Determine focus areas
@@ -1015,12 +1002,11 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
 
         focus_summary = (
             ", ".join(focus_areas) if focus_areas else "General quality improvements"
-        )
+        )"""
 
         # Generate detailed feedback
         detailed_feedback = self._generate_detailed_feedback(
             score_results,
-            gap_analysis,
             length_analysis,
             improvement_guidelines,
             word_count,
@@ -1028,10 +1014,10 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
 
         return {
             "score_results": score_results,
-            "gap_analysis": gap_analysis,
+            "gap_analysis": None,  # gap_analysis,
             "length_analysis": length_analysis,
-            "focus_areas": focus_areas,
-            "focus_summary": focus_summary,
+            "focus_areas": None,  # focus_areas,
+            "focus_summary": None,  # focus_summary,
             "detailed_feedback": detailed_feedback,
             "improvement_guidelines": improvement_guidelines,
         }
@@ -1039,7 +1025,6 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
     def _generate_detailed_feedback(
         self,
         score_results: ArticleScoreModel,
-        gap_analysis: Dict[str, Any],
         length_analysis: Dict[str, Any],
         improvement_guidelines: str,
         word_count: int,
@@ -1053,155 +1038,36 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         feedback_parts.append(
             f"Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({score_results.percentage:.1f}%)"
         )
-        feedback_parts.append(f"Gap to target: {gap_analysis['total_gap']} points")
         feedback_parts.append("")
 
-        # Priority improvement areas based on scoring gaps
-        if gap_analysis["priority_categories"]:
-            feedback_parts.append("🎯 TOP PRIORITY IMPROVEMENTS (Ordered by Impact):")
-            for i, cat_info in enumerate(gap_analysis["priority_categories"][:3], 1):
-                category = cat_info["category"]
-                gap = cat_info["gap"]
-                weight = cat_info["weight"]
-                potential_gain = cat_info.get("potential_gain", gap)
-                feedback_parts.append(
-                    f"{i}. {category}: +{gap} points needed (weight: {weight}, potential gain: +{potential_gain})"
-                )
-            feedback_parts.append("")
-
-        # Detailed word count strategy with category-specific guidance
-        # Use the actual word count passed to this method
-        length_status = self.word_count_manager.get_word_count_status(word_count)
-
-        feedback_parts.append("📝 WORD COUNT STRATEGY WITH CATEGORY-SPECIFIC GUIDANCE:")
         feedback_parts.append(
-            f"Current: {word_count} words | Target: {self.min_length}-{self.max_length} words"
-        )
-        feedback_parts.append(
-            f"Within Range: {length_status['within_range']} | Strategy: {length_analysis['strategy']}"
+            f"Current Article Length: {word_count} words | Needed Length: {self.min_length}-{self.max_length} words"
         )
         feedback_parts.append("")
-
-        # Generate category-specific expansion/reduction recommendations
-        priority_categories = [
-            cat["category"] for cat in gap_analysis["priority_categories"][:3]
-        ]
 
         if word_count < self.min_length:
-            feedback_parts.append(
-                "🔍 EXPANSION RECOMMENDATIONS (Prioritized by Scoring Gaps):"
-            )
             words_needed = self.min_length - word_count
             feedback_parts.append(
-                f"Need +{words_needed} words minimum. Focus expansion on:"
+                f"🔍 As the top priority, expand the article length by at least {words_needed} words.\n"
             )
-
-            for i, category in enumerate(priority_categories, 1):
-                category_score = sum(
-                    r.score for r in score_results.category_scores[category]
-                )
-                category_max = sum(
-                    SCORING_CRITERIA[category][j].get("points", 5)
-                    for j in range(len(score_results.category_scores[category]))
-                )
-                category_percentage = (
-                    (category_score / category_max) * 100 if category_max > 0 else 0
-                )
-
-                # Suggest word allocation based on category priority and current performance
-                if category_percentage < 70:  # Low performing category
-                    suggested_words = max(
-                        100, words_needed // (len(priority_categories) - i + 1)
-                    )
-                    feedback_parts.append(
-                        f"  {i}. {category} (+{suggested_words} words): Low performance ({category_percentage:.1f}%)"
-                    )
-                    feedback_parts.append(
-                        f"     Focus: Add detailed examples, deeper analysis, specific evidence"
-                    )
-                elif category_percentage < 85:  # Medium performing category
-                    suggested_words = max(
-                        50, words_needed // (len(priority_categories) * 2)
-                    )
-                    feedback_parts.append(
-                        f"  {i}. {category} (+{suggested_words} words): Moderate performance ({category_percentage:.1f}%)"
-                    )
-                    feedback_parts.append(
-                        f"     Focus: Strengthen weak criteria, add supporting details"
-                    )
+            feedback_parts.append(
+                f"Use a maximum of 5 of the suggestions listed in detailed improvement feedback to lengthen the article with quality:"
+            )
 
         elif word_count > self.max_length:
-            feedback_parts.append(
-                "✂️ REDUCTION RECOMMENDATIONS (Preserve High-Scoring Content):"
-            )
             words_to_cut = word_count - self.max_length
             feedback_parts.append(
-                f"Need -{words_to_cut} words. Reduce from lowest-performing areas:"
+                f"✂️ As the top priority, reduce the article length by at least {words_to_cut} words)"
             )
-
-            # Sort categories by performance (lowest first for reduction)
-            category_performance = []
-            for (
-                category_name,
-                category_results,
-            ) in score_results.category_scores.items():
-                category_score = sum(r.score for r in category_results)
-                category_max = sum(
-                    SCORING_CRITERIA[category_name][j].get("points", 5)
-                    for j in range(len(category_results))
-                )
-                category_percentage = (
-                    (category_score / category_max) * 100 if category_max > 0 else 0
-                )
-                category_performance.append(
-                    (category_name, category_percentage, category_score)
-                )
-
-            category_performance.sort(
-                key=lambda x: x[1]
-            )  # Sort by percentage (lowest first)
-
-            for i, (category, percentage, score) in enumerate(category_performance[:3]):
-                suggested_reduction = max(20, words_to_cut // 3)
-                feedback_parts.append(
-                    f"  {i+1}. {category} (-{suggested_reduction} words): {percentage:.1f}% performance"
-                )
-                feedback_parts.append(
-                    f"     Focus: Remove redundancy, tighten weak arguments, eliminate filler"
-                )
+            feedback_parts.append(f"Do not reduce the quality of content.")
 
         feedback_parts.append("")
 
         # Detailed category-specific feedback prioritized by scoring gaps
         feedback_parts.append(
-            "🔍 DETAILED IMPROVEMENT FEEDBACK (Prioritized by Scoring Impact):"
+            "🔍 The following detailed improvement feedback is prioritized by most important first."
         )
-        feedback_parts.append("-" * 60)
 
-        # Process categories in priority order first, then remaining categories
-        processed_categories = set()
-
-        # First, process priority categories
-        for cat_info in gap_analysis["priority_categories"][:3]:
-            category_name = cat_info["category"]
-            if category_name in score_results.category_scores:
-                self._add_category_feedback(
-                    feedback_parts,
-                    category_name,
-                    score_results.category_scores[category_name],
-                    priority=True,
-                )
-                processed_categories.add(category_name)
-
-        # Then process remaining categories
-        for category_name, category_results in score_results.category_scores.items():
-            if category_name not in processed_categories:
-                self._add_category_feedback(
-                    feedback_parts, category_name, category_results, priority=False
-                )
-
-        # Strategic improvement guidelines
-        feedback_parts.append("🎯 STRATEGIC IMPROVEMENT GUIDELINES:")
         feedback_parts.append(improvement_guidelines)
 
         return "\n".join(feedback_parts)
@@ -1575,11 +1441,13 @@ class CriteriaExtractor:
     it into formats suitable for article generation and improvement guidance.
     """
 
-    def __init__(self):
+    def __init__(self, min_length, max_length):
         """Initialize the criteria extractor with current scoring criteria."""
         self.criteria = SCORING_CRITERIA
         self._criteria_summary = None
         self._category_weights = None
+        self.min_length = min_length
+        self.max_length = max_length
 
     def get_criteria_summary(self) -> str:
         """
@@ -1614,11 +1482,11 @@ class CriteriaExtractor:
             str: Specific improvement guidelines based on scoring weaknesses
         """
         guidelines = []
-        guidelines.append("=== IMPROVEMENT GUIDELINES ===\n")
 
         # Analyze category performance
         category_weights = self.get_category_weights()
-        weak_categories = []
+        below_perfect_categories = []
+        perfect_categories = []
 
         for category, results in score_results.category_scores.items():
             category_total = sum(r.score for r in results)
@@ -1627,28 +1495,46 @@ class CriteriaExtractor:
                 (category_total / category_max * 100) if category_max > 0 else 0
             )
 
-            if category_percentage < 70:  # Below 70% performance
-                weak_categories.append((category, category_percentage, results))
+            if category_percentage < 100:
+                below_perfect_categories.append(
+                    (category, category_percentage, results)
+                )
+            else:
+                perfect_categories.append(
+                    (category, category_percentage, results, category_weights[category])
+                )
 
-        # Sort by performance (worst first)
-        weak_categories.sort(key=lambda x: x[1])
+        # Sort below perfect categories by lowest percentage first
+        below_perfect_categories.sort(key=lambda x: x[1])
 
-        if weak_categories:
-            guidelines.append("PRIORITY IMPROVEMENT AREAS:\n")
+        # Sort perfect categories by highest weight first
+        perfect_categories.sort(key=lambda x: x[3], reverse=True)
 
-            for i, (category, percentage, results) in enumerate(weak_categories[:3], 1):
-                guidelines.append(f"{i}. {category} ({percentage:.1f}% performance)")
-                guidelines.append(f"   Weight: {category_weights[category]} points")
+        # First, show categories below 100% performance
+        for i, (category, percentage, results) in enumerate(
+            below_perfect_categories, 1
+        ):
+            guidelines.append(f"{i}. {category}")
+            guidelines.append(f"   Weight: {category_weights[category]} points")
 
-                # Add specific criterion feedback
-                for result in results:
-                    if result.score < 3:  # Below average criterion
-                        guidelines.append(f"   • {result.criterion}")
-                        guidelines.append(f"     Current: {result.score} points")
-                        guidelines.append(f"     Issue: {result.reasoning}")
-                        guidelines.append(f"     Action: {result.suggestions}")
+            # Add specific criterion feedback
+            for result in results:
+                guidelines.append(f"     Suggestion: {result.suggestions}")
 
-                guidelines.append("")
+            guidelines.append("")
+
+        # Then, show categories with 100% performance
+        for i, (category, percentage, results, weight) in enumerate(
+            perfect_categories, len(below_perfect_categories) + 1
+        ):
+            guidelines.append(f"{i}. {category}")
+            guidelines.append(f"   Weight: {weight} points")
+
+            # Add specific criterion feedback
+            for result in results:
+                guidelines.append(f"     Suggestion: {result.suggestions}")
+
+            guidelines.append("")
 
         # Add general improvement strategies
         guidelines.append("GENERAL IMPROVEMENT STRATEGIES:")
@@ -1688,6 +1574,14 @@ class CriteriaExtractor:
         generation_prompt = []
         generation_prompt.append("SCORING CRITERIA FOR ARTICLE GENERATION:")
         generation_prompt.append("Your article will be evaluated on these criteria:\n")
+
+        generation_prompt.append(
+            f"**Article Length** ({self.min_length} - {self.max_length} words):"
+        )
+        generation_prompt.append(
+            f"As the top priority the article must be between {self.min_length} and {self.max_length} words in length."
+        )
+        generation_prompt.append("")
 
         category_weights = self.get_category_weights()
 
@@ -1843,16 +1737,9 @@ class CriteriaExtractor:
         return gap_analysis
 
 
-# Convenience function for quick access
-def get_current_criteria_summary() -> str:
-    """Get a quick summary of current scoring criteria."""
-    extractor = CriteriaExtractor()
-    return extractor.get_criteria_summary()
-
-
 if __name__ == "__main__":
     # Test the criteria extractor
-    extractor = CriteriaExtractor()
+    extractor = CriteriaExtractor(min_length=2000, max_length=2500)
 
     print("=== CRITERIA EXTRACTOR TEST ===")
     print("\nCategory Weights:")

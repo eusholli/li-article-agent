@@ -902,10 +902,7 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
             judgement.overall_feedback = "\n".join(overall_feedback)
             # Randomly select one of the REGENERATION_PROMPTS to prepend
             regeneration_prompt = random.choice(REGENERATION_PROMPTS)
-            judgement.improvement_prompt = (
-                regeneration_prompt + "\n\n" + judgement.improvement_prompt
-            )
-            # Set meets_requirements to True since we are keeping this version
+            judgement.improvement_prompt = regeneration_prompt + "\n\n"
             judgement.meets_requirements = False
 
             latest_version.content = previous_version.content

@@ -406,6 +406,15 @@ class LinkedInArticleGenerator:
         if context and verbose:
             print(f"🌐 Using web context: {len(context)} URLs")
 
+        if verbose:
+            self.verbose_manager.print_generation_phase(
+                "Generating initial markdown article from draft"
+            )
+
+        initial_article, initial_context = self._generate_initial_article(
+            initial_draft, context, verbose
+        )
+
         # Store draft version with a pending judgement
         draft_judgement = JudgementModel(
             total_score=0,
@@ -422,22 +431,12 @@ class LinkedInArticleGenerator:
         draft_version = ArticleVersion(
             version=self.iteration,
             content=initial_draft,
-            context="",
+            context=initial_context,
             recreate_ctx=self.recreate_ctx,
             judgement=draft_judgement,
         )
 
         self.versions.append(draft_version)
-        # self.iteration += 1
-
-        if verbose:
-            self.verbose_manager.print_generation_phase(
-                "Generating initial markdown article from draft"
-            )
-
-        initial_article, initial_context = self._generate_initial_article(
-            initial_draft, context, verbose
-        )
 
         # Start iterative improvement process with the generated article
         final_result = self._iterative_improvement_process(
@@ -657,9 +656,12 @@ class LinkedInArticleGenerator:
             except ContextWindowError as e:
                 if verbose:
                     print(f"⚠️ Context window validation failed: {e}")
-                # Reduce context size and retry
-                context = ""
-                content_parts["context"] = ""
+                # Intelligently reduce context size instead of making it empty
+                context = self.context_manager.reduce_context_size(
+                    context, content_parts, verbose
+                )
+                content_parts["context"] = context
+                # Validate again to ensure it now fits
                 self.context_manager.validate_content(content_parts)
 
             # Generate initial article with comprehensive RAG context
@@ -731,8 +733,12 @@ class LinkedInArticleGenerator:
             except ContextWindowError as e:
                 if verbose:
                     print(f"⚠️ Context window validation failed for improvement: {e}")
-                # Reduce context size and retry
-                content_parts["context"] = ""
+                # Intelligently reduce context size instead of making it empty
+                context = self.context_manager.reduce_context_size(
+                    context, content_parts, verbose
+                )
+                content_parts["context"] = context
+                # Validate again to ensure it now fits
                 self.context_manager.validate_content(content_parts)
 
             # Generate improved article using judge's improvement prompt

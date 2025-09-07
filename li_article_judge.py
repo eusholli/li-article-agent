@@ -906,7 +906,7 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
                 regeneration_prompt + "\n\n" + judgement.improvement_prompt
             )
             # Set meets_requirements to True since we are keeping this version
-            judgement.meets_requirements = True
+            judgement.meets_requirements = False
 
             latest_version.content = previous_version.content
             latest_version.judgement = judgement
@@ -945,7 +945,7 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
 
         # Check if both targets are achieved
         quality_achieved = score_results.percentage >= self.passing_score_percentage
-        # meets_requirements = quality_achieved and length_achieved
+        meets_requirements = quality_achieved and length_achieved
 
         # Generate improvement analysis if needed
         improvement_analysis = self._analyze_improvement_needs(
@@ -962,7 +962,7 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         judgement.percentage = score_results.percentage
         judgement.performance_tier = score_results.performance_tier
         judgement.word_count = word_count
-        judgement.meets_requirements = quality_achieved
+        judgement.meets_requirements = meets_requirements
         judgement.improvement_prompt = improvement_prompt
         # Append to overall feedback with scoring results
         judgement.overall_feedback = (

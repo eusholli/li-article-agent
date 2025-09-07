@@ -15,6 +15,7 @@ Key Features:
 from dataclasses import dataclass
 from typing import Dict, Optional, Any
 from dspy_factory import DspyModelConfig
+import re
 
 
 class ContextWindowError(Exception):
@@ -229,6 +230,138 @@ class ContextWindowManager:
                 token_count = self.estimate_tokens_from_chars(char_count)
                 breakdown_parts.append(f"{name}: {token_count:,} tokens")
         return ", ".join(breakdown_parts)
+
+    def reduce_context_size(
+        self, context: str, content_parts: Dict[str, str], verbose: bool = True
+    ) -> str:
+        """
+        Intelligently reduce context size to fit within available space.
+
+        This method implements multiple strategies to preserve the most valuable
+        context information while ensuring it fits within the allocated budget.
+
+        Args:
+            context: Original context string to reduce
+            content_parts: Dictionary of all content parts for space calculation
+            verbose: Whether to print progress information
+
+        Returns:
+            Reduced context string that fits within available space
+        """
+        if not context:
+            return ""
+
+        original_chars = len(context)
+        original_tokens = self.estimate_tokens(context)
+
+        # Calculate available space for context
+        budget = self.get_budget()
+        available_tokens = (
+            budget.total_tokens - budget.output_tokens - budget.safety_tokens
+        )
+
+        # Account for other content parts
+        other_content = ""
+        for key, value in content_parts.items():
+            if key != "context" and value:
+                other_content += str(value) + "\n"
+
+        other_tokens = self.estimate_tokens(other_content)
+        available_for_context = max(0, available_tokens - other_tokens)
+
+        if verbose:
+            print(f"📊 Context reduction needed:")
+            print(
+                f"  • Original context: {original_chars:,} chars ({original_tokens:,} tokens)"
+            )
+            print(f"  • Available for context: {available_for_context:,} tokens")
+            if original_tokens > available_for_context:
+                print(
+                    f"  • Target reduction: {original_tokens - available_for_context:,} tokens"
+                )
+
+        # If we have enough space, return original
+        if original_tokens <= available_for_context:
+            if verbose:
+                print(f"  ✅ Context fits within available space")
+            return context
+
+        # Strategy 1: Preserve complete citations by splitting on citation boundaries
+        citation_pattern = r"\[([^\]]+)\]\((https?://[^\)]+)\)"
+        citations = re.findall(citation_pattern, context)
+
+        if citations:
+            # Extract all citation matches with their full text for sorting
+            citation_matches = list(re.finditer(citation_pattern, context))
+            citations_with_text = [
+                (match.group(0), len(match.group(1))) for match in citation_matches
+            ]
+            # Sort by citation text length (prefer longer, more informative citations)
+            citations_with_text.sort(key=lambda x: x[1], reverse=True)
+
+            # Build reduced context by adding citations until we hit the limit
+            reduced_parts = []
+            total_tokens = 0
+
+            for citation_text, _ in citations_with_text:
+                citation_tokens = self.estimate_tokens(citation_text)
+                if total_tokens + citation_tokens <= available_for_context:
+                    reduced_parts.append(citation_text)
+                    total_tokens += citation_tokens
+                else:
+                    break
+
+            if reduced_parts:
+                reduced_context = "\n\n".join(reduced_parts)
+                if verbose:
+                    final_tokens = self.estimate_tokens(reduced_context)
+                    print(
+                        f"  ✅ Citation-based reduction: {len(reduced_context):,} chars ({final_tokens:,} tokens)"
+                    )
+                return reduced_context
+
+        # Strategy 2: Fallback to sentence-based truncation
+        target_chars = available_for_context * self.CHARS_PER_TOKEN
+        sentences = re.split(r"(?<=[.!?])\s+", context.strip())
+
+        reduced_sentences = []
+        current_chars = 0
+
+        for sentence in sentences:
+            sentence_chars = len(sentence)
+            if current_chars + sentence_chars <= target_chars:
+                reduced_sentences.append(sentence)
+                current_chars += sentence_chars
+            else:
+                break
+
+        reduced_context = ". ".join(reduced_sentences)
+        if reduced_sentences and not reduced_context.endswith("."):
+            reduced_context += "."
+
+        # Strategy 3: Final fallback - hard truncate by characters with word boundaries
+        final_tokens = self.estimate_tokens(reduced_context)
+        if final_tokens > available_for_context:
+            max_chars = available_for_context * self.CHARS_PER_TOKEN
+            reduced_context = context[:max_chars]
+
+            # Try to end at a word boundary
+            if max_chars < len(context):
+                last_space = reduced_context.rfind(" ")
+                if last_space > max_chars * 0.8:  # Don't cut too much
+                    reduced_context = reduced_context[:last_space]
+
+        if verbose:
+            final_chars = len(reduced_context)
+            final_tokens = self.estimate_tokens(reduced_context)
+            reduction_percent = (
+                (1 - final_chars / original_chars) * 100 if original_chars > 0 else 0
+            )
+            print(
+                f"  ✅ Final reduction: {final_chars:,} chars ({final_tokens:,} tokens) - {reduction_percent:.1f}% reduction"
+            )
+
+        return reduced_context
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get model configuration information."""

@@ -637,10 +637,6 @@ class LinkedInArticleGenerator:
 
         # Prepare generation inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
-        draft_length = self.word_count_manager.count_words(draft_or_outline)
-        article_length = self.word_count_manager.get_length_optimization_prompt(
-            draft_length
-        )
 
         try:
             # Validate context window before generation
@@ -648,7 +644,6 @@ class LinkedInArticleGenerator:
                 "draft": draft_or_outline,
                 "context": context,
                 "criteria": scoring_criteria,
-                "article_length": article_length,
             }
 
             try:
@@ -711,12 +706,6 @@ class LinkedInArticleGenerator:
         if verbose and context:
             print(f"📚 Using context: {len(context)} characters")
 
-        # Prepare improvement inputs using judge's guidance
-        scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
-        article_length = self.word_count_manager.get_length_optimization_prompt(
-            judgement.word_count
-        )
-
         try:
             # Validate context window before improvement
             content_parts = {
@@ -724,8 +713,6 @@ class LinkedInArticleGenerator:
                 "original_draft": self._get_original_draft(),
                 "context": context,
                 "feedback": judgement.improvement_prompt,
-                "criteria": scoring_criteria,
-                "guidance": article_length,
             }
 
             try:

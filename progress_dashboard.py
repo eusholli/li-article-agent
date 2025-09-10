@@ -112,7 +112,7 @@ class ProgressDashboard:
         preview_parts.append("Choose your next action:")
         preview_parts.append("  1. ✅ Proceed with these improvements")
         preview_parts.append("  2. ✏️  Add specific instructions for this iteration")
-        preview_parts.append("  3. 💾 Export all versions to directory")
+        preview_parts.append("  3. 💾 Export this version to directory")
         preview_parts.append("  4. 🏁 Finish with current version")
 
         return "\n".join(preview_parts)

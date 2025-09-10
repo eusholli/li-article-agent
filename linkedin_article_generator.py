@@ -14,6 +14,8 @@ import re
 import asyncio
 import os
 from pathlib import Path
+import traceback
+
 
 from models import ArticleVersion, JudgementModel
 from li_article_judge import ComprehensiveLinkedInArticleJudge, CriteriaExtractor
@@ -333,6 +335,11 @@ class LinkedInArticleGenerator:
         self.original_draft: Optional[str] = None
         self.recreate_ctx = recreate_ctx
         self.auto = auto
+
+        if export_dir:
+            # Use command-line specified directory with automatic numbering
+            export_dir = self._resolve_directory_name(export_dir)
+            print(f"📁 Using directory: {export_dir}")
         self.export_dir = export_dir
 
     def _perform_rag_search(self, draft_text: str, verbose: bool = True) -> str:
@@ -457,128 +464,143 @@ class LinkedInArticleGenerator:
         user_instructions = ""  # Track user-provided instructions
         finish_requested = False  # Track if user requested to finish early
 
-        # Ensure at least one iteration runs to get a judgement
-        while self.iteration < max(1, self.max_iterations):
-            self.iteration += 1
+        try:
+            # Ensure at least one iteration runs to get a judgement
+            while self.iteration < max(1, self.max_iterations):
+                self.iteration += 1
 
-            # Print article version before judging
-            if verbose:
-                self._print_article_version_before_judging(
-                    current_article, self.iteration
-                )
+                word_count = self.word_count_manager.count_words(current_article)
 
-            # Create a pending judgement for the temporary version
-            pending_judgement = JudgementModel(
-                total_score=0,
-                max_score=100,
-                percentage=0.0,
-                performance_tier="Pending",
-                word_count=len(current_article.split()),  # Quick word count estimate
-                meets_requirements=False,
-                improvement_prompt="Pending analysis - this is a temporary placeholder that will be replaced with actual improvement guidance from the comprehensive judge.",
-                overall_feedback=None,  # Optional field for comprehensive feedback
-            )
-
-            # Create a temporary version for judging
-            temp_version = ArticleVersion(
-                version=self.iteration,
-                content=current_article,
-                context=current_context,
-                recreate_ctx=self.recreate_ctx,
-                judgement=pending_judgement,  # Pending placeholder
-            )
-
-            # Judge with the temporary version included
-            prediction = self.judge(self.versions + [temp_version])
-
-            # Judged version to append
-            version = prediction.output  # This is the real judgement
-            judgement = version.judgement
-            self.versions.append(version)
-
-            # Print judging results after judging
-            if verbose:
-                self._print_judging_results_after_judging(version)
-
-            self.generation_log.append(
-                f"Version {version.version}: Improved article ({version.judgement.word_count} words, improvement {version.judgement.improvement_prompt})"
-            )
-
-            if self.auto == False:
-                # In non-auto mode, always print iteration status
-                self.verbose_manager.print_iteration_status(self.iteration, version)
-
-                keep_asking = True
-                while keep_asking:
-
-                    user_decision = self._get_user_decision(version)
-
-                    if user_decision == "finish":
-                        keep_asking = False  # Default to not asking again
-                        # break out of loop while self.iteration < max(1, self.max_iterations): to finish
-                        if verbose:
-                            print("🏁 User chose to finish the generation process.")
-                        finish_requested = True
-
-                    elif user_decision == "instructions":
-                        keep_asking = False
-                        user_instructions = self._get_user_instructions()
-                        # Prepend user instructions to judge's improvement prompt if provided
-                        if user_instructions:
-                            judgement.improvement_prompt = f"""THESE ARE NEW INSTRUCTIONS:
-<NEW>
-{user_instructions}
-<NEW/>"""
-                    elif user_decision == "export":
-                        self._export_versions_to_directory(self.export_dir)
-                        continue  # Return to menu after export
-                    # Continue with improvement if "continue" or "instructions" was selected
-                    elif user_decision == "continue":
-                        keep_asking = False  # Exit the loop to continue improving
-                    else:
-                        print("⚠️ Invalid choice, please try again.")
-            else:
-
-                # Check if targets are achieved using the judge's decision
-                if version.judgement.meets_requirements:
-                    if verbose:
-                        print(
-                            f"🎉 BOTH TARGETS ACHIEVED! Article reached world-class status with optimal length!"
-                        )
-
-                    self.generation_log.append(
-                        f"Iteration {self.iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
+                # Print article version before judging
+                if verbose:
+                    self._print_article_version_before_judging(
+                        current_article, self.iteration, word_count
                     )
 
-                    break  # Exit loop if both targets are met
+                # Create a pending judgement for the temporary version
+                pending_judgement = JudgementModel(
+                    total_score=0,
+                    max_score=100,
+                    percentage=0.0,
+                    performance_tier="Pending",
+                    word_count=word_count,
+                    meets_requirements=False,
+                    improvement_prompt="Pending analysis - this is a temporary placeholder that will be replaced with actual improvement guidance from the comprehensive judge.",
+                    overall_feedback=None,  # Optional field for comprehensive feedback
+                )
 
+                # Create a temporary version for judging
+                temp_version = ArticleVersion(
+                    version=self.iteration,
+                    content=current_article,
+                    context=current_context,
+                    recreate_ctx=self.recreate_ctx,
+                    judgement=pending_judgement,  # Pending placeholder
+                )
+
+                # Judge with the temporary version included
+                prediction = self.judge(self.versions + [temp_version])
+
+                # Judged version to append
+                version = prediction.output  # This is the real judgement
+                judgement = version.judgement
+                self.versions.append(version)
+
+                # Print judging results after judging
+                if verbose:
+                    self._print_judging_results_after_judging(version)
+
+                self.generation_log.append(
+                    f"Version {version.version}: Improved article ({version.judgement.word_count} words, improvement {version.judgement.improvement_prompt})"
+                )
+
+                if self.auto == False:
+                    # In non-auto mode, always print iteration status
+                    self.verbose_manager.print_iteration_status(self.iteration, version)
+
+                    keep_asking = True
+                    while keep_asking:
+
+                        user_decision = self._get_user_decision(version)
+
+                        if user_decision == "finish":
+                            keep_asking = False  # Default to not asking again
+                            # break out of loop while self.iteration < max(1, self.max_iterations): to finish
+                            if verbose:
+                                print("🏁 User chose to finish the generation process.")
+                            finish_requested = True
+
+                        elif user_decision == "instructions":
+                            keep_asking = False
+                            user_instructions = self._get_user_instructions()
+                            # Prepend user instructions to judge's improvement prompt if provided
+                            if user_instructions:
+                                judgement.improvement_prompt = f"""THESE ARE NEW INSTRUCTIONS:
+    <NEW>
+    {user_instructions}
+    <NEW/>"""
+                        elif user_decision == "export":
+                            self._export_version_to_directory(self.export_dir)
+                            continue  # Return to menu after export
+                        # Continue with improvement if "continue" or "instructions" was selected
+                        elif user_decision == "continue":
+                            keep_asking = False  # Exit the loop to continue improving
+                        else:
+                            print("⚠️ Invalid choice, please try again.")
                 else:
-                    if verbose:
-                        f"⚠️ Iteration {self.iteration}: Targets not yet achieved: (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
 
-            if finish_requested:
-                break
+                    # Export version immediately if auto mode and export_dir is set
+                    if self.export_dir:
+                        self._export_single_version(version, self.export_dir)
+                    # Check if targets are achieved using the judge's decision
+                    if version.judgement.meets_requirements:
+                        if verbose:
+                            print(
+                                f"🎉 BOTH TARGETS ACHIEVED! Article reached world-class status with optimal length!"
+                            )
 
-            # Generate improved version using the judge's improvement prompt
-            if verbose:
-                self.verbose_manager.print_generation_phase(
-                    "Generating improved version"
+                        self.generation_log.append(
+                            f"Iteration {self.iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
+                        )
+
+                        break  # Exit loop if both targets are met
+
+                    else:
+                        if verbose:
+                            f"⚠️ Iteration {self.iteration}: Targets not yet achieved: (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
+
+                if finish_requested:
+                    break
+
+                # Generate improved version using the judge's improvement prompt
+                if verbose:
+                    self.verbose_manager.print_generation_phase(
+                        "Generating improved version"
+                    )
+
+                improved_article, used_context = (
+                    self._generate_improved_version_with_judgement(
+                        current_article, judgement, verbose
+                    )
                 )
 
-            improved_article, used_context = (
-                self._generate_improved_version_with_judgement(
-                    current_article, judgement, verbose
-                )
-            )
+                current_article = improved_article
+                current_context = used_context
 
-            current_article = improved_article
-            current_context = used_context
+            # Auto-export if export_dir is specified and we have versions to export
+            if self.export_dir and self.versions:
+                if verbose:
+                    print(
+                        f"💾 Exporting versions summary to '{self.export_dir}' directory..."
+                    )
+                self._create_summary_md(self.export_dir)
 
-        # Auto-export if export_dir is specified and we have versions to export
-        if self.export_dir and self.versions:
+        except KeyboardInterrupt:
+            print("\n❌ Generation interrupted by user. Gracefully finish if possible")
+        except Exception as e:
+            print(f"❌ Error during generation: {e}. Gracefully finish if possible")
             if verbose:
-                print(f"💾 Auto-exporting versions to '{self.export_dir}' directory...")
-            self._export_versions_to_directory(self.export_dir)
+                traceback.print_exc()
 
         # Final scoring
         final_judgement = self.versions[-1].judgement
@@ -751,10 +773,11 @@ class LinkedInArticleGenerator:
         return self.original_draft or ""
 
     def _print_article_version_before_judging(
-        self, article_content: str, version_number: int
+        self, article_content: str, version_number: int, word_count: int
     ):
         """Print the article version content before sending it to be judged."""
-        print(f"\n📄 ARTICLE VERSION {version_number} - SENDING TO JUDGE")
+        print(f"\n📄 ARTICLE VERSION {version_number} - SENDING TO JUDGE\n")
+        print(f"\n📄 ARTICLE LENGTH: {word_count} words")
         print("=" * 60)
         print("Article Content:")
         print("-" * 30)
@@ -912,6 +935,44 @@ class LinkedInArticleGenerator:
 
         return history
 
+    def _export_single_version(self, version: "ArticleVersion", directory_name: str):
+        """Export a single article version to the specified directory.
+
+        Args:
+            version: The ArticleVersion to export
+            directory_name: Directory name to export to
+        """
+        # Ensure directory exists
+        # os.makedirs(directory_name, exist_ok=True)
+
+        # Use version number for unique filename
+        filename = f"version-{version.version}.md"
+        filepath = os.path.join(directory_name, filename)
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                # Add version metadata header
+                f.write(f"# Article Version {version.version}\n\n")
+                f.write(f"**Generated:** {version.timestamp}\n")
+                if version.judgement:
+                    f.write(
+                        f"**Score:** {version.judgement.percentage:.1f}% ({version.judgement.total_score}/{version.judgement.max_score})\n"
+                    )
+                    f.write(f"**Word Count:** {version.judgement.word_count}\n")
+                    f.write(
+                        f"**Performance Tier:** {version.judgement.performance_tier}\n"
+                    )
+                    if version.judgement.overall_feedback:
+                        f.write(f"**Feedback:** {version.judgement.overall_feedback}\n")
+                f.write("\n---\n\n")
+                # Write the article content
+                f.write(version.content)
+
+            print(f"✅ Exported version {version.version} to {filename}")
+
+        except Exception as e:
+            print(f"❌ Failed to export version {version.version}: {e}")
+
     def _resolve_directory_name(self, base_name: str) -> str:
         """Resolve directory name with automatic numbering if conflicts exist.
 
@@ -922,16 +983,19 @@ class LinkedInArticleGenerator:
             The resolved directory name (with numbering if needed)
         """
         if not os.path.exists(base_name):
+            # Create the directory
+            os.makedirs(base_name, exist_ok=False)
             return base_name
 
         counter = 1
         while True:
             candidate = f"{base_name}-{counter}"
             if not os.path.exists(candidate):
+                os.makedirs(base_name, exist_ok=False)
                 return candidate
             counter += 1
 
-    def _export_versions_to_directory(self, directory_name: Optional[str] = None):
+    def _export_version_to_directory(self, directory_name: Optional[str] = None):
         """Export all article versions to a user-specified directory.
 
         Args:
@@ -945,11 +1009,7 @@ class LinkedInArticleGenerator:
             return
 
         # Get directory name - either from parameter or user input
-        if directory_name:
-            # Use command-line specified directory with automatic numbering
-            final_dir_name = self._resolve_directory_name(directory_name)
-            print(f"📁 Using directory: {final_dir_name}")
-        else:
+        if not directory_name:
             # Interactive mode - get directory name from user
             while True:
                 try:
@@ -959,10 +1019,10 @@ class LinkedInArticleGenerator:
                         continue
 
                     # Use automatic numbering for user input as well
-                    final_dir_name = self._resolve_directory_name(dir_name)
-                    if final_dir_name != dir_name:
+                    directory_name = self._resolve_directory_name(dir_name)
+                    if directory_name != dir_name:
                         print(
-                            f"📁 Directory '{dir_name}' exists, using '{final_dir_name}' instead"
+                            f"📁 Directory '{dir_name}' exists, using '{directory_name}' instead"
                         )
                     break
 
@@ -973,14 +1033,19 @@ class LinkedInArticleGenerator:
                     print(f"❌ Error with directory name: {e}")
                     return
 
-        # Create the directory
-        try:
-            os.makedirs(final_dir_name, exist_ok=True)
-        except Exception as e:
-            print(f"❌ Error creating directory '{final_dir_name}': {e}")
-            return
+        self.export_dir = directory_name
 
-        # Export each version
+        # Export latest version
+        version = self.versions[-1]
+        self._export_single_version(version, self.export_dir)
+
+        print(
+            f"\n🎉 Successfully exported version {version.version} to '{directory_name}' directory"
+        )
+        print("📂 Returning to main menu...")
+
+        return
+
         exported_count = 0
         for version in self.versions:
             filename = f"version-{version.version}.md"
@@ -1099,6 +1164,10 @@ class LinkedInArticleGenerator:
                         )
                         f.write(
                             f"- **Meets Requirements:** {'✅ Yes' if judgement.meets_requirements else '❌ No'}\n"
+                        )
+
+                        f.write(
+                            f"- **Article:** {version.content[:200]}{'...' if len(version.content) > 200 else ''}\n"
                         )
 
                         if judgement.overall_feedback:

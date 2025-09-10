@@ -33,9 +33,9 @@ from word_count_manager import WordCountManager
 import random
 
 REGENERATION_PROMPTS = [
-    "I rejected your last version as it was judged to be no better than the previous one. This time, let's think about it differently.",
-    "I rejected your last version as it was judged to be no better than the previous one. This time, ask yourself the question 'What am I not seeing here?'",
-    "I rejected your last version as it was judged to be no better than the previous one. This time, ask yourself the question 'What else should the reader know?'",
+    "I rejected your last version as it was judged to be no better than the previous one. Do not completely rewrite the article but this time, let's think about it differently.",
+    "I rejected your last version as it was judged to be no better than the previous one. Do not completely rewrite the article but this time, ask yourself the question 'What am I not seeing here?'",
+    "I rejected your last version as it was judged to be no better than the previous one. Do not completely rewrite the article but this time, ask yourself the question 'What else should the reader know?'",
 ]
 
 # ==========================================================================

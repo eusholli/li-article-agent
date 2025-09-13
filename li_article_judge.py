@@ -577,11 +577,11 @@ class ABArticleScorer(dspy.Signature):
     """
 
     latest_version = dspy.InputField(
-        desc="The first version of the LinkedIn article to evaluate"
+        desc="The latest version of the LinkedIn article to evaluate"
     )
 
     previous_version = dspy.InputField(
-        desc="The second version of the LinkedIn article to evaluate"
+        desc="The previous version of the LinkedIn article to evaluate"
     )
 
     scoring_criteria_json = dspy.InputField(

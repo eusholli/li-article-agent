@@ -113,7 +113,7 @@ class ArticleImprovementSignature(dspy.Signature):
     )
 
 
-class LinkedInArticleGenerator:
+class LinkedInArticleGenerator(dspy.Module):
     """
     Main class for generating world-class LinkedIn articles using iterative improvement.
 
@@ -294,6 +294,9 @@ class LinkedInArticleGenerator:
             judge_model: Optional model name for article scoring components
             rag_model: Optional model name for RAG retrieval components
         """
+
+        super().__init__()
+
         self.target_score_percentage = target_score_percentage
         self.max_iterations = max_iterations
 
@@ -308,7 +311,9 @@ class LinkedInArticleGenerator:
         self.models = models
 
         # Initialize context window manager
-        self.context_manager = ContextWindowManager(models["generator"])
+        self.context_manager = ContextWindowManager(
+            models["generator"], word_count_max=word_count_max
+        )
 
         # Use the new A vs. B judge with encapsulated analysis logic
         self.judge = ComprehensiveLinkedInArticleJudge(
@@ -325,7 +330,12 @@ class LinkedInArticleGenerator:
 
         # Initialize DSPy modules with optional model-specific LM instances
 
-        self.generator = dspy.ChainOfThought(ArticleGenerationSignature)
+        self.generator = dspy.Refine(
+            module=dspy.ChainOfThought(ArticleGenerationSignature),
+            N=5,  # Maximum refinement attempts for word count
+            reward_fn=self._word_count_reward,
+            threshold=1.0,
+        )
         self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
 
         # Track generation history
@@ -355,7 +365,11 @@ class LinkedInArticleGenerator:
         """
         try:
 
-            ctx, urls = asyncio.run(retrieve_and_pack(draft_text, models=self.models))
+            ctx, urls = asyncio.run(
+                retrieve_and_pack(
+                    draft_text, models=self.models, context_manager=self.context_manager
+                )
+            )
 
             if verbose:
                 self.verbose_manager.print_rag_status(len(ctx), urls)
@@ -371,6 +385,18 @@ class LinkedInArticleGenerator:
             if verbose:
                 print(f"⚠️ RAG search failed: {e}")
             return ""
+
+    def forward(self, initial_draft: str, verbose: bool = True) -> dspy.Prediction:
+
+        result = self.generate_article(initial_draft, verbose)
+        return dspy.Prediction(output=result)
+
+    async def aforward(
+        self, initial_draft: str, verbose: bool = True
+    ) -> dspy.Prediction:
+
+        result = self.generate_article(initial_draft, verbose)
+        return dspy.Prediction(output=result)
 
     def generate_article(
         self, initial_draft: str, verbose: bool = True
@@ -768,6 +794,16 @@ class LinkedInArticleGenerator:
                 )
             return current_article, context or ""
 
+    def _word_count_reward(self, args, pred: dspy.Prediction) -> float:
+        """Reward function for dspy.Refine - returns 1.0 if word count is acceptable."""
+        article_text = pred.generated_article
+        word_count = self.word_count_manager.count_words(article_text)
+        within_range = self.word_count_manager.is_within_range(word_count)
+        print(
+            f"In word count reward function, count is {word_count}, within range: {within_range}"
+        )
+        return 1.0 if within_range else 0.0
+
     def _get_original_draft(self) -> str:
         """Get the original draft for reference during improvements."""
         return self.original_draft or ""
@@ -968,7 +1004,7 @@ class LinkedInArticleGenerator:
                 # Write the article content
                 f.write(version.content)
 
-            print(f"✅ Exported version {version.version} to {filename}")
+            print(f"✅ Exported version {version.version} to {filepath}")
 
         except Exception as e:
             print(f"❌ Failed to export version {version.version}: {e}")
@@ -991,7 +1027,7 @@ class LinkedInArticleGenerator:
         while True:
             candidate = f"{base_name}-{counter}"
             if not os.path.exists(candidate):
-                os.makedirs(base_name, exist_ok=False)
+                os.makedirs(candidate, exist_ok=False)
                 return candidate
             counter += 1
 

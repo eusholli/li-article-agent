@@ -17,12 +17,14 @@ import dspy
 import argparse
 import sys
 from pathlib import Path
+import asyncio
+import time
 
 from linkedin_article_generator import LinkedInArticleGenerator
 from dspy_factory import get_openrouter_model, DspyModelConfig
 from li_article_judge import print_score_report
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 import mlflow
 
@@ -31,7 +33,7 @@ DEFAULT_MODEL_NAME = "moonshotai/kimi-k2:free"
 
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 mlflow.set_experiment(f"DSPy LinkedIn {current_time}")
-mlflow.dspy.autolog()
+mlflow.dspy.autolog()  # Automatically log DSPy runs to MLflow
 
 
 def read_file(filepath: str) -> str:
@@ -111,8 +113,238 @@ def resolve_model(
     )
 
 
+def create_parallel_generators(
+    args: argparse.Namespace, base_models: Dict[str, DspyModelConfig], num_versions: int
+) -> List[LinkedInArticleGenerator]:
+    """
+    Create multiple LinkedInArticleGenerator instances with different temperature settings.
+
+    Args:
+        args: Parsed command line arguments
+        base_models: Base model configurations (generator, judge, rag)
+        num_versions: Number of parallel versions to create
+
+    Returns:
+        List of configured LinkedInArticleGenerator instances
+    """
+    generators = []
+
+    # Temperature settings for variety (same model, different creativity levels)
+    temperatures = [0.1, 0.5, 0.9]  # Focused, Standard, Creative
+    if num_versions > 3:
+        # Add more variations if more versions requested
+        temperatures.extend([0.3, 0.7][: num_versions - 3])
+
+    for i, temp in enumerate(temperatures[:num_versions]):
+        # Create model config with different temperature for generator only
+        version_models = base_models.copy()
+        generator_model = get_openrouter_model(args.generator_model, temp=temp)
+        if generator_model is None:
+            print(
+                f"⚠️ Failed to create model config for temperature {temp}, skipping version {i+1}"
+            )
+            continue
+        version_models["generator"] = generator_model
+
+        # Create generator instance
+        generator = LinkedInArticleGenerator(
+            target_score_percentage=args.target_score,
+            max_iterations=args.max_iterations,
+            word_count_min=args.word_count_min,
+            word_count_max=args.word_count_max,
+            models=version_models,
+            recreate_ctx=args.recreate_ctx,
+            auto=True,  # Force auto mode for parallel execution
+            export_dir=args.export_dir,
+        )
+
+        generators.append(generator)
+
+    return generators
+
+
+def run_parallel_generation(
+    generators: List[LinkedInArticleGenerator], draft_text: str, verbose: bool
+) -> List[Dict[str, Any]]:
+    """
+    Run multiple generators in parallel using DSPy's built-in Parallel module.
+
+    Args:
+        generators: List of LinkedInArticleGenerator instances
+        draft_text: The article draft text
+
+    Returns:
+        List of result dictionaries with success/failure status
+    """
+
+    # Use DSPy's built-in parallel execution
+    parallel = dspy.Parallel(num_threads=len(generators))
+
+    # Prepare parallel execution calls
+    parallel_calls = []
+    for i, generator in enumerate(generators):
+        # Create a wrapper function for each generator
+        def make_generate_call(gen, draft, version_num=i + 1):
+            def generate_call():
+                try:
+                    start_time = time.time()
+                    result = gen.generate_article(draft, verbose=verbose)
+                    generation_time = time.time() - start_time
+
+                    return {
+                        "version": version_num,
+                        "success": True,
+                        "result": result,
+                        "generation_time": generation_time,
+                        "temperature": getattr(
+                            gen.models["generator"], "temperature", 0.5
+                        ),
+                    }
+                except Exception as e:
+                    return {
+                        "version": version_num,
+                        "success": False,
+                        "error": str(e),
+                        "temperature": getattr(
+                            gen.models["generator"], "temperature", 0.5
+                        ),
+                    }
+
+            return generate_call
+
+        parallel_calls.append((make_generate_call(generator, draft_text), {}))
+
+    # Execute in parallel using DSPy's Parallel module
+    parallel_results = parallel(parallel_calls)
+
+    # Extract results from DSPy's parallel execution format
+    results = []
+    for result in parallel_results:
+        if callable(result):
+            # If result is still callable, execute it
+            results.append(result())
+        else:
+            results.append(result)
+
+    return results
+
+
+def display_version_comparison(results: List[Dict[str, Any]]) -> None:
+    """
+    Display a comparison table of all generated versions.
+
+    Args:
+        results: List of generation results
+    """
+    print("\n" + "=" * 100)
+    print("📊 VERSION COMPARISON")
+    print("=" * 100)
+
+    # Header
+    print("<10")
+    print("-" * 100)
+
+    successful_results = [r for r in results if r["success"]]
+
+    for result in results:
+        version = result["version"]
+        success = result["success"]
+
+        if success:
+            score = result["result"]["final_score"].percentage
+            word_count = result["result"]["word_count"]
+            gen_time = result["generation_time"]
+            temp = result["temperature"]
+            status = "✅ Success"
+        else:
+            score = word_count = gen_time = temp = "N/A"
+            status = f"❌ Failed: {result['error'][:50]}..."
+
+        print("<10")
+
+    print("=" * 100)
+
+    if successful_results:
+        print(f"\n🎯 {len(successful_results)} versions generated successfully")
+        print(
+            f"📈 Best score: {max(r['result']['final_score'].percentage for r in successful_results):.1f}%"
+        )
+        print(
+            f"⏱️  Fastest generation: {min(r['generation_time'] for r in successful_results):.1f}s"
+        )
+    else:
+        print("\n❌ All versions failed to generate")
+
+
+def select_best_version(results: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Interactive prompt to select the best version from successful results.
+
+    Args:
+        results: List of generation results
+
+    Returns:
+        Selected result dictionary
+    """
+    successful_results = [r for r in results if r["success"]]
+
+    if not successful_results:
+        print("❌ No successful versions to select from")
+        return None
+
+    if len(successful_results) == 1:
+        print("✅ Only one successful version - selecting it automatically")
+        return successful_results[0]
+
+    print("\n🎯 SELECT BEST VERSION")
+    print("-" * 50)
+
+    while True:
+        try:
+            choice = (
+                input(
+                    f"Enter version number (1-{len(successful_results)}) or 'best' for highest score: "
+                )
+                .strip()
+                .lower()
+            )
+
+            if choice == "best":
+                # Select version with highest score
+                best_result = max(
+                    successful_results,
+                    key=lambda r: r["result"]["final_score"].percentage,
+                )
+                print(
+                    f"✅ Selected version {best_result['version']} (highest score: {best_result['result']['final_score'].percentage:.1f}%)"
+                )
+                return best_result
+
+            version_num = int(choice)
+            if 1 <= version_num <= len(successful_results):
+                selected_result = successful_results[version_num - 1]
+                print(f"✅ Selected version {selected_result['version']}")
+                return selected_result
+            else:
+                print(
+                    f"❌ Please enter a number between 1 and {len(successful_results)}, or 'best'"
+                )
+
+        except ValueError:
+            print("❌ Please enter a valid number or 'best'")
+        except KeyboardInterrupt:
+            print("\n❌ Selection cancelled")
+            return successful_results[0]  # Return first successful version
+
+
 def main():
     """Main entry point for the LinkedIn Article Generator."""
+
+    # Initialize variables for parallel mode
+    results = None
+    selected_result = None
+    generator = None
+
     parser = argparse.ArgumentParser(
         description="Generate world-class LinkedIn articles using DSPy REACT with intelligent web search and iterative improvement",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -221,7 +453,11 @@ Target Scores:
         help="Regenerate RAG context for each article version (default: False - reuse initial context)",
     )
     parser.add_argument(
-        "--quiet", "-q", action="store_true", help="Suppress progress messages"
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Print verbose progress messages",
     )
     parser.add_argument(
         "--auto",
@@ -234,6 +470,21 @@ Target Scores:
         help="Directory name to save all generated versions to (automatic numbering if exists)",
     )
 
+    # Parallel execution options
+    parser.add_argument(
+        "--versions",
+        type=int,
+        default=1,
+        choices=range(1, 6),
+        metavar="[1-5]",
+        help="Number of parallel versions to generate (default: 1, max: 5)",
+    )
+    parser.add_argument(
+        "--compare-only",
+        action="store_true",
+        help="Show version comparison without interactive selection prompt",
+    )
+
     args = parser.parse_args()
 
     # Validate max_iterations is at least 1
@@ -243,7 +494,7 @@ Target Scores:
 
     try:
         # Resolve all models using cascading fallback logic
-        if not args.quiet:
+        if args.verbose:
             print(f"🔍 Resolving models with fallback logic...")
 
         try:
@@ -264,21 +515,24 @@ Target Scores:
             "rag": resolved_rag,
         }
 
-        # Setup DSPy with the resolved generator model
-        if not args.quiet:
+        # Setup DSPy with the resolved generator model for thread-safe parallel execution
+        if args.verbose:
             print(
                 f"🤖 Setting up DSPy with resolved generator model: {resolved_generator.name}"
             )
-        dspy.configure(lm=resolved_generator.dspy_lm)
+        dspy.configure(
+            lm=resolved_generator.dspy_lm,
+            async_max_workers=4,
+        )
 
         # Get article draft
         if args.draft:
             draft_text = args.draft
-            if not args.quiet:
+            if args.verbose:
                 print(f"📝 Using provided draft ({len(draft_text)} characters)")
         elif args.file:
             draft_text = read_file(args.file)
-            if not args.quiet:
+            if args.verbose:
                 print(f"📄 Loaded draft from: {args.file}")
                 print(f"📝 Draft length: {len(draft_text)} characters")
         else:
@@ -303,7 +557,7 @@ Challenges:
 The future will likely be hybrid, combining the best of both worlds.
             """.strip()
 
-            if not args.quiet:
+            if args.verbose:
                 print("📝 No draft provided, using sample article outline")
                 print(f"📝 Sample length: {len(draft_text)} characters")
 
@@ -312,8 +566,8 @@ The future will likely be hybrid, combining the best of both worlds.
             print("❌ Error: Article draft is too short (minimum 50 characters)")
             sys.exit(1)
 
-        # Display resolved model configuration if not quiet
-        if not args.quiet:
+        # Display resolved model configuration if verbose
+        if args.verbose:
             print(f"🔧 Resolved Model Configuration:")
             print(
                 f"   Generator: {models['generator'].name}, Temp: 0.5, max_output_tokens: {models['generator'].max_output_tokens} "
@@ -325,29 +579,94 @@ The future will likely be hybrid, combining the best of both worlds.
                 f"   RAG: {models['rag'].name}, Temp: 0.0, max_output_tokens: {models['rag'].max_output_tokens} "
             )
 
-        # Initialize Article Generator with component-specific models
-        generator = LinkedInArticleGenerator(
-            target_score_percentage=args.target_score,
-            max_iterations=args.max_iterations,
-            word_count_min=args.word_count_min,
-            word_count_max=args.word_count_max,
-            models=models,
-            recreate_ctx=args.recreate_ctx,
-            auto=args.auto,
-            export_dir=args.export_dir,
-        )
+        """director_ideas = await asyncio.gather(
+            *[self.genDirectorCut.acall(video_idea=video_idea, director=director) 
+                for director in all_directors]"""
 
-        if not args.quiet:
-            print(f"🎯 Target score: ≥{args.target_score}%")
-            print(f"🔄 Max iterations: {args.max_iterations}")
-            print(f"📏 Word count range: {args.word_count_min}-{args.word_count_max}")
+        # Check if parallel mode is requested
+        if args.versions > 1:
+            if args.verbose:
+                print(
+                    f"🔀 PARALLEL MODE: Generating {args.versions} versions with different temperature settings"
+                )
+                print(f"🎯 Target score: ≥{args.target_score}%")
+                print(f"🔄 Max iterations: {args.max_iterations}")
+                print(
+                    f"📏 Word count range: {args.word_count_min}-{args.word_count_max}"
+                )
 
-        # Generate article
-        result = generator.generate_article(draft_text, verbose=not args.quiet)
+            # Create parallel generators
+            generators = create_parallel_generators(args, models, args.versions)
 
-        # Print detailed scoring report or dashboard based on quiet mode
-        if args.quiet:
-            # In quiet mode, show the progress dashboard instead of full report
+            if not generators:
+                print("❌ Failed to create any generators")
+                sys.exit(1)
+
+            if args.verbose:
+                print(
+                    f"🤖 Created {len(generators)} generators with temperatures: {[getattr(g.models['generator'], 'temp', 0.5) for g in generators]}"
+                )
+
+            # Run parallel generation
+            if args.verbose:
+                print("🚀 Starting parallel generation...")
+
+            results = run_parallel_generation(
+                generators, draft_text, verbose=args.verbose
+            )
+
+            # Display comparison
+            display_version_comparison(results)
+
+            # Select best version (unless compare-only mode)
+            if args.compare_only:
+                print("📊 Compare-only mode: exiting without selection")
+                successful_count = len([r for r in results if r["success"]])
+                if successful_count > 0:
+                    sys.exit(0)
+                else:
+                    sys.exit(1)
+
+            selected_result = select_best_version(results)
+
+            if selected_result is None:
+                print("❌ No successful versions to select from")
+                sys.exit(1)
+
+            # Use selected result as the final result
+            result = selected_result["result"]
+            if args.verbose:
+                print(
+                    f"✅ Using version {selected_result['version']} (Score: {result['final_score'].percentage:.1f}%, Temp: {selected_result['temperature']})"
+                )
+
+        else:
+            # Single generator mode (existing logic)
+            if args.verbose:
+                print(f"🎯 Target score: ≥{args.target_score}%")
+                print(f"🔄 Max iterations: {args.max_iterations}")
+                print(
+                    f"📏 Word count range: {args.word_count_min}-{args.word_count_max}"
+                )
+
+            # Initialize Article Generator with component-specific models
+            generator = LinkedInArticleGenerator(
+                target_score_percentage=args.target_score,
+                max_iterations=args.max_iterations,
+                word_count_min=args.word_count_min,
+                word_count_max=args.word_count_max,
+                models=models,
+                recreate_ctx=args.recreate_ctx,
+                auto=args.auto,
+                export_dir=args.export_dir,
+            )
+
+            # Generate article
+            result = generator.generate_article(draft_text, verbose=args.verbose)
+
+        # Print detailed scoring report or dashboard based on verbose mode
+        if args.verbose:
+            # In verbose mode, show the progress dashboard instead of full report
             from progress_dashboard import ProgressDashboard
 
             dashboard = ProgressDashboard()
@@ -367,7 +686,7 @@ The future will likely be hybrid, combining the best of both worlds.
             # Save to specified file
             save_article(result["final_article"], args.output)
         else:
-            # Display to screen (both quiet and non-quiet modes)
+            # Display to screen (both verbose and non-verbose modes)
             print("\n" + "=" * 80)
             print("📄 FINAL GENERATED ARTICLE")
             print("=" * 80)
@@ -376,23 +695,69 @@ The future will likely be hybrid, combining the best of both worlds.
 
         # Export detailed results if specified
         if args.export_results:
-            generator.export_results(args.export_results)
-            if not args.quiet:
-                print(f"📊 Detailed results exported to: {args.export_results}")
+            if args.versions > 1:
+                # In many verions mode, we don't have a single generator instance
+                # Export the selected result data instead
+                import json
+
+                # Get the selected result and results from the parallel execution
+                selected_version = None
+                all_results_data = []
+
+                if "selected_result" in locals() and selected_result is not None:
+                    selected_version = selected_result["version"]
+
+                if results is not None:
+                    all_results_data = [
+                        {
+                            "version": r["version"],
+                            "success": r["success"],
+                            "score": (
+                                r["result"]["final_score"].percentage
+                                if r["success"]
+                                else None
+                            ),
+                            "word_count": (
+                                r["result"]["word_count"] if r["success"] else None
+                            ),
+                            "generation_time": (
+                                r["generation_time"] if r["success"] else None
+                            ),
+                            "temperature": r["temperature"],
+                        }
+                        for r in results
+                    ]
+
+                export_data = {
+                    "parallel_mode": True,
+                    "selected_version": selected_version,
+                    "final_result": result,
+                    "all_results": all_results_data,
+                }
+                with open(args.export_results, "w", encoding="utf-8") as f:
+                    json.dump(export_data, f, indent=2, ensure_ascii=False)
+                if args.verbose:
+                    print(f"📊 Parallel results exported to: {args.export_results}")
+            else:
+                # Single mode - use the generator instance
+                if generator is not None:
+                    generator.export_results(args.export_results)
+                    if args.verbose:
+                        print(f"📊 Detailed results exported to: {args.export_results}")
 
         # Exit with appropriate code based on results
         if result["target_achieved"]:
-            if not args.quiet:
+            if args.verbose:
                 print("✅ Success: Article achieved world-class status!")
             sys.exit(0)
         else:
             final_score = result["final_score"].percentage
             if final_score >= 72:
-                if not args.quiet:
+                if args.verbose:
                     print("⚠️  Warning: Article is strong but could be improved")
                 sys.exit(0)
             else:
-                if not args.quiet:
+                if args.verbose:
                     print("❌ Article needs significant improvement before publishing")
                 sys.exit(0)
 
@@ -401,7 +766,7 @@ The future will likely be hybrid, combining the best of both worlds.
         sys.exit(130)
     except Exception as e:
         print(f"❌ Error during generation: {e}")
-        if not args.quiet:
+        if args.verbose:
             import traceback
 
             traceback.print_exc()

@@ -31,11 +31,11 @@ class ContextWindowBudget:
     within a model's context window.
     """
 
-    total_tokens: int
-    output_tokens: int  # 25% allocation for LLM response generation
-    instruction_tokens: int  # 15% allocation for DSPy signatures and prompts
-    rag_tokens: int  # 35% allocation for RAG context and citations
-    safety_tokens: int  # 25% allocation for safety margin and overhead
+    total_tokens: int  # Total - output - safety
+    output_tokens: int  # As defined by model config
+    instruction_tokens: int  # 50% allocation for DSPy signatures and prompts
+    rag_tokens: int  # 40% allocation for RAG context and citations
+    safety_tokens: int  # 10% allocation for safety margin and overhead
 
     # Character equivalents (4 chars ≈ 1 token)
     total_chars: int
@@ -54,10 +54,9 @@ class ContextWindowManager:
     """
 
     # Fixed allocation percentages
-    OUTPUT_PERCENTAGE = 0.25  # 25% for output tokens
-    INSTRUCTION_PERCENTAGE = 0.15  # 15% for instructions/prompts
-    RAG_PERCENTAGE = 0.35  # 35% for RAG context
-    SAFETY_PERCENTAGE = 0.25  # 25% for safety margin
+    INSTRUCTION_PERCENTAGE = 0.50  # 40% for instructions/prompts
+    RAG_PERCENTAGE = 0.40  # 40% for RAG context
+    SAFETY_PERCENTAGE = 0.10  # 10% for safety margin
 
     # Character to token conversion ratio
     CHARS_PER_TOKEN = 4
@@ -65,7 +64,7 @@ class ContextWindowManager:
     # Warning threshold (80% of available space)
     WARNING_THRESHOLD = 0.8
 
-    def __init__(self, model_config: DspyModelConfig):
+    def __init__(self, model_config: DspyModelConfig, word_count_max: int):
         """
         Initialize context window manager with model configuration.
 
@@ -74,7 +73,7 @@ class ContextWindowManager:
         """
         self.model_config = model_config
         self.context_window = model_config.context_window
-        self.max_output_tokens = model_config.max_output_tokens
+        self.max_output_tokens = word_count_max * 2  # Approx. 2 tokens per word
         self._budget = self._calculate_budget()
 
     def _calculate_budget(self) -> ContextWindowBudget:
@@ -82,21 +81,21 @@ class ContextWindowManager:
         total_tokens = self.context_window
 
         # Calculate token allocations
-        output_tokens = int(total_tokens * self.OUTPUT_PERCENTAGE)
-        instruction_tokens = int(total_tokens * self.INSTRUCTION_PERCENTAGE)
-        rag_tokens = int(total_tokens * self.RAG_PERCENTAGE)
-        safety_tokens = int(total_tokens * self.SAFETY_PERCENTAGE)
+        total_available = total_tokens - self.max_output_tokens
+        safety_tokens = int(total_available * self.SAFETY_PERCENTAGE)
+        instruction_tokens = int(total_available * self.INSTRUCTION_PERCENTAGE)
+        rag_tokens = int(total_available * self.RAG_PERCENTAGE)
 
         # Convert to character equivalents
         total_chars = total_tokens * self.CHARS_PER_TOKEN
-        output_chars = output_tokens * self.CHARS_PER_TOKEN
+        output_chars = self.max_output_tokens * self.CHARS_PER_TOKEN
         instruction_chars = instruction_tokens * self.CHARS_PER_TOKEN
         rag_chars = rag_tokens * self.CHARS_PER_TOKEN
         safety_chars = safety_tokens * self.CHARS_PER_TOKEN
 
         return ContextWindowBudget(
             total_tokens=total_tokens,
-            output_tokens=output_tokens,
+            output_tokens=self.max_output_tokens,
             instruction_tokens=instruction_tokens,
             rag_tokens=rag_tokens,
             safety_tokens=safety_tokens,
@@ -113,37 +112,12 @@ class ContextWindowManager:
 
     def get_rag_limit(self) -> int:
         """
-        Get the character limit for RAG content (35% allocation).
+        Get the character limit for RAG content.
 
         Returns:
             Maximum characters allowed for RAG context
         """
         return self._budget.rag_chars
-
-    def get_passage_limit(self) -> int:
-        """
-        Get the character limit for individual passage processing in DSPy.
-
-        This accounts for instruction overhead and ensures individual passages
-        can be processed without exceeding context limits.
-
-        Returns:
-            Maximum characters for a single passage in DSPy processing
-        """
-        # Available space = total - output - safety margin
-        available_tokens = (
-            self._budget.total_tokens
-            - self._budget.output_tokens
-            - self._budget.safety_tokens
-        )
-
-        # Reserve space for DSPy instructions (~1000 tokens)
-        instruction_overhead = 1000
-        passage_tokens = available_tokens - instruction_overhead
-
-        # Convert to characters and ensure reasonable bounds
-        passage_chars = passage_tokens * self.CHARS_PER_TOKEN
-        return max(5000, min(passage_chars, 50000))  # 5K-50K char range
 
     def estimate_tokens(self, text: str) -> int:
         """
@@ -176,28 +150,21 @@ class ContextWindowManager:
         total_chars = sum(len(content) for content in content_parts.values() if content)
         total_tokens = self.estimate_tokens_from_chars(total_chars)
 
-        # Calculate available space (total - output - safety)
-        available_tokens = (
-            self._budget.total_tokens
-            - self._budget.output_tokens
-            - self._budget.safety_tokens
-        )
-
         # Check if content exceeds available space
-        if total_tokens > available_tokens:
+        if total_tokens > self._budget.total_tokens:
             raise ContextWindowError(
                 f"Content exceeds context window limits: "
                 f"{total_tokens:,} tokens required, "
-                f"{available_tokens:,} tokens available. "
+                f"{self._budget.total_tokens:,} tokens available. "
                 f"Content breakdown: {self._format_content_breakdown(content_parts)}"
             )
 
         # Check if approaching warning threshold
-        usage_ratio = total_tokens / available_tokens
+        usage_ratio = total_tokens / self._budget.total_tokens
         if usage_ratio > self.WARNING_THRESHOLD:
             print(
                 f"⚠️ Context window usage warning: {usage_ratio:.1%} of available space used "
-                f"({total_tokens:,}/{available_tokens:,} tokens)"
+                f"({total_tokens:,}/{self._budget.total_tokens:,} tokens)"
             )
 
         return True
@@ -256,9 +223,6 @@ class ContextWindowManager:
 
         # Calculate available space for context
         budget = self.get_budget()
-        available_tokens = (
-            budget.total_tokens - budget.output_tokens - budget.safety_tokens
-        )
 
         # Account for other content parts
         other_content = ""
@@ -267,7 +231,7 @@ class ContextWindowManager:
                 other_content += str(value) + "\n"
 
         other_tokens = self.estimate_tokens(other_content)
-        available_for_context = max(0, available_tokens - other_tokens)
+        available_for_context = max(0, self._budget.total_tokens - other_tokens)
 
         if verbose:
             print(f"📊 Context reduction needed:")
@@ -371,59 +335,7 @@ class ContextWindowManager:
             "model_name": self.model_config.name,
         }
 
-    def print_budget_summary(self) -> None:
-        """Print a summary of the context window budget allocation."""
-        budget = self._budget
-        print("📊 Context Window Budget Summary")
-        print("=" * 40)
-        print(f"Model: {self.model_config.name}")
-        print(
-            f"Total Context: {budget.total_tokens:,} tokens ({budget.total_chars:,} chars)"
-        )
-        print()
-        print("Allocation Breakdown:")
-        print(
-            f"  Output (25%):      {budget.output_tokens:,} tokens ({budget.output_chars:,} chars)"
-        )
-        print(
-            f"  Instructions (15%): {budget.instruction_tokens:,} tokens ({budget.instruction_chars:,} chars)"
-        )
-        print(
-            f"  RAG Context (35%):  {budget.rag_tokens:,} tokens ({budget.rag_chars:,} chars)"
-        )
-        print(
-            f"  Safety Margin (25%): {budget.safety_tokens:,} tokens ({budget.safety_chars:,} chars)"
-        )
-        print()
-        print(f"RAG Limit: {self.get_rag_limit():,} characters")
-        print(f"Passage Limit: {self.get_passage_limit():,} characters")
-
 
 if __name__ == "__main__":
-    # Example usage and testing
-    from dspy_factory import get_openrouter_model
-
-    print("Testing Context Window Manager...")
-    print("=" * 50)
-
-    # Test with a sample model
-    model_config = get_openrouter_model("openrouter/moonshotai/kimi-k2:free")
-    if model_config:
-        manager = ContextWindowManager(model_config)
-        manager.print_budget_summary()
-
-        # Test validation
-        print("\n🧪 Testing Content Validation:")
-        test_content = {
-            "draft": "This is a test article draft. " * 100,
-            "context": "This is RAG context. " * 200,
-            "criteria": "Scoring criteria text. " * 50,
-        }
-
-        try:
-            manager.validate_content(test_content)
-            print("✅ Content validation passed")
-        except ContextWindowError as e:
-            print(f"❌ Content validation failed: {e}")
-    else:
-        print("❌ Could not load model configuration for testing")
+    # Use as a module for context window management
+    pass

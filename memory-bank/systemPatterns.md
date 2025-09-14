@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-### Enhanced Core System Design with Runtime Model Selection
+### Enhanced Core System Design with Runtime Model Selection and Parallel Generation
 ```
 Input (Outline/Draft) 
     ↓
@@ -10,264 +10,180 @@ Model Selection & Configuration (component-specific LLM models)
     ↓
 Dynamic Criteria Extraction (from li_article_judge.py)
     ↓
-Article Generation (DSPy Module with configurable model + word count guidance)
+Parallel Version Generation (DSPy Parallel with temperature variation)
     ↓
-Combined Quality + Length Scoring (li_article_judge.py with configurable model + word_count field)
+Combined Quality + Length Scoring (li_article_judge.py with configurable model)
     ↓
-Unified Target Achievement Check (quality_achieved AND length_achieved)
+Interactive Version Comparison (success metrics and performance tracking)
     ↓
-Smart Feedback Analysis (targets scoring weaknesses for length adjustments)
+Smart Version Selection (manual, best-score, or auto-selection)
     ↓
-Iterative Refinement Loop (combines quality and length improvements with optimal models)
+Export System (directory-based with automatic conflict resolution)
     ↓
 Target Achievement (≥89% score + 2000-2500 words achieved simultaneously)
 ```
 
-### Runtime Model Selection Architecture
-```
-Command-Line Arguments
-    ↓
-Model Configuration Resolution (fallback hierarchy)
-    ↓
-Enhanced Factory Pattern (dspy_factory.py)
-    ↓
-Model Instance Creation & Caching
-    ↓
-Component-Specific LM Assignment
-    ↓
-DSPy Module Initialization (with dedicated models)
-    ↓
-Execution with Optimal Models per Operation
-```
-
-### New Draft Scoping Pattern (Latest Enhancement)
-- **Pre-Generation Analysis:** Comprehensive understanding of input before generation
-- **Key Insights Extraction:** Main theme, key points, target audience, core message
-- **Content Gap Identification:** Areas needing expansion for complete LinkedIn article
-- **Consistency Tracking:** Maintain fidelity to original draft throughout iterations
-- **Context Preservation:** Original draft context flows through entire pipeline
-
-### Key Design Patterns
-
-#### 1. Enhanced Factory Pattern for Model Management
-- **Model Instance Creation:** `get_model_instance(model_name)` creates and caches LM instances
-- **Component LM Creation:** `create_component_lm(model_name)` wraps models in ConfiguredLM
-- **Intelligent Fallbacks:** `get_fallback_model()` provides graceful degradation
-- **Performance Caching:** `_model_instance_cache` prevents redundant model initialization
-- **Backward Compatibility:** Existing `setup_dspy_provider()` unchanged
-
-#### 2. Component-Specific Model Selection Pattern
+### Parallel Generation Architecture Pattern
 ```python
-class ComponentWithModel(dspy.Module):
-    def __init__(self, model_name=None):
-        super().__init__()
-        if model_name:
-            # Use component-specific model
-            self.lm = create_component_lm(model_name)
-            self.module = dspy.ChainOfThought(Signature, lm=self.lm)
-        else:
-            # Fall back to global DSPy configuration
-            self.module = dspy.ChainOfThought(Signature)
+# Parallel Generator Creation with Temperature Variation
+def create_parallel_generators(args, base_models, num_versions):
+    generators = []
+    temperatures = [0.1, 0.5, 0.9]  # Focused, Standard, Creative
+    if num_versions > 3:
+        temperatures.extend([0.3, 0.7][:num_versions - 3])
+
+    for temp in temperatures[:num_versions]:
+        # Create model config with different temperature for generator only
+        version_models = base_models.copy()
+        generator_model = get_openrouter_model(args.generator_model, temp=temp)
+        version_models["generator"] = generator_model
+        # Create generator instance with temperature-specific model
+        generator = LinkedInArticleGenerator(models=version_models, ...)
+        generators.append(generator)
+    return generators
+
+# DSPy Parallel Execution Pattern
+def run_parallel_generation(generators, draft_text):
+    parallel = dspy.Parallel(num_threads=len(generators))
+    parallel_calls = []
+
+    for i, generator in enumerate(generators):
+        def make_generate_call(gen, draft, version_num=i + 1):
+            def generate_call():
+                try:
+                    result = gen.generate_article(draft, verbose=False)
+                    return {
+                        "version": version_num,
+                        "success": True,
+                        "result": result,
+                        "generation_time": time.time() - start_time,
+                        "temperature": getattr(gen.models["generator"], "temperature", 0.5),
+                    }
+                except Exception as e:
+                    return {"version": version_num, "success": False, "error": str(e)}
+            return generate_call
+
+        parallel_calls.append((make_generate_call(generator, draft_text), {}))
+
+    # Execute in parallel using DSPy's Parallel module
+    parallel_results = parallel(parallel_calls)
+    return parallel_results
 ```
 
-#### 3. Dynamic Criteria Integration Pattern
-- **Runtime Import:** Load scoring criteria from li_article_judge.py at execution time
-- **Criteria Parsing:** Extract weights, questions, and scales automatically
-- **Adaptive Generation:** Adjust article focus based on current criteria weights
-- **Change Detection:** Automatically adapt when criteria are modified
-
-#### 4. Iterative Improvement Loop Pattern
+### Thread-Safe Cache Pattern
 ```python
-while not (score >= target_score and word_count_valid):
-    article = generate_or_improve(outline, feedback, previous_version, models)
-    score_result = score_article(article, judge_model)
-    feedback = extract_improvement_guidance(score_result)
-    iteration += 1
-    if iteration > max_iterations:
-        break
+# Module-level cache with thread-safety
+_cache: Dict[str, Any] = {"searches": {}, "extractions": {}}
+_cache_lock = asyncio.Lock()
+_cache_initialized = False
+
+async def get_cached_search(query: str) -> Optional[dict]:
+    """Async wrapper for cache read."""
+    async with _cache_lock:
+        search_data = _cache["searches"].get(query)
+        return search_data.get("response") if search_data else None
+
+async def set_cached_search(query: str, response: dict, cache_file: str) -> None:
+    """Async wrapper for cache write."""
+    async with _cache_lock:
+        _cache["searches"][query] = {"timestamp": time.time(), "response": response}
+        # Run sync save in thread pool to avoid blocking event loop
+        await asyncio.to_thread(save_cache, cache_file)
+
+def save_cache(cache_file: str) -> None:
+    """Synchronously save cache to file atomically."""
+    try:
+        # Write to temp file first
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".json", dir=os.path.dirname(cache_file))
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                json.dump(_cache, f, indent=2, ensure_ascii=False)
+            # Atomic rename
+            os.rename(temp_path, cache_file)
+        except Exception:
+            os.unlink(temp_path)
+            raise
+    except Exception as e:
+        logging.warning(f"Failed to save cache: {e}")
 ```
 
-#### 5. Multi-Constraint Optimization Pattern
-- **Dual Targets:** Simultaneously optimize for score and word count
-- **Constraint Balancing:** Prioritize improvements that address both constraints
-- **Trade-off Management:** Handle conflicts between quality and length requirements
-- **Model Optimization:** Use optimal models for each constraint type
+### Export System Pattern
+```python
+class LinkedInArticleGenerator:
+    def _resolve_directory_name(self, base_name: str) -> str:
+        """Resolve directory name with automatic numbering if conflicts exist."""
+        if not os.path.exists(base_name):
+            os.makedirs(base_name, exist_ok=False)
+            return base_name
 
-#### 6. Feedback-Driven Refinement Pattern
-- **Structured Feedback:** Convert scoring results into actionable improvement instructions
-- **Priority Ranking:** Focus on lowest-scoring criteria first
-- **Incremental Improvement:** Make targeted changes rather than complete rewrites
-- **Model-Aware Feedback:** Consider model capabilities when generating improvement instructions
+        counter = 1
+        while True:
+            candidate = f"{base_name}-{counter}"
+            if not os.path.exists(candidate):
+                os.makedirs(candidate, exist_ok=False)
+                return candidate
+            counter += 1
 
-#### 7. Cost Optimization Pattern
-- **Strategic Model Selection:** Use expensive models only where they add most value
-- **Free Model Defaults:** Default to free models for cost-conscious usage
-- **Mixed Model Workflows:** Combine free and paid models based on operation importance
-- **Budget-Quality Balance:** Optimize for best quality within budget constraints
+    def _export_single_version(self, version: ArticleVersion, directory_name: str):
+        """Export a single article version with metadata."""
+        filename = f"version-{version.version}.md"
+        filepath = os.path.join(directory_name, filename)
 
-#### 8. Module-Level Cache Pattern
-- **Shared State Management:** Single cache instance across all component instances
-- **Async Lock Protection:** `asyncio.Lock` prevents concurrent access corruption
-- **Atomic File Operations:** Temp file + rename pattern ensures data integrity
-- **Thread Pool Isolation:** File I/O runs in separate threads to avoid blocking event loop
-- **Lazy Initialization:** Cache loads once when first instance is created
-- **Concurrent Safety:** Multiple coroutines can safely access cache simultaneously
-- **Memory Efficiency:** Single cache instance reduces memory usage
-- **Error Resilience:** Robust error handling with graceful fallbacks
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                # Add version metadata header
+                f.write(f"# Article Version {version.version}\n\n")
+                f.write(f"**Generated:** {version.timestamp}\n")
+                if version.judgement:
+                    f.write(f"**Score:** {version.judgement.percentage:.1f}%\n")
+                    f.write(f"**Word Count:** {version.judgement.word_count}\n")
+                    f.write(f"**Performance Tier:** {version.judgement.performance_tier}\n")
+                f.write("\n---\n\n")
+                # Write article content
+                f.write(version.content)
+        except Exception as e:
+            print(f"❌ Failed to export version {version.version}: {e}")
+```
 
-## Component Relationships
+### Component Relationships
 
 ### Core Modules
 1. **Enhanced DSPy Factory:** Model instance management and caching
 2. **CriteriaExtractor:** Dynamically loads and parses scoring criteria
 3. **ArticleGenerator:** Creates and improves articles using configurable DSPy models
 4. **ArticleScorer:** Evaluates articles using configurable scoring models
-5. **Fast RAG Retriever (rag_fast.py):** High-performance async web search and intelligent content packing
+5. **Fast RAG Retriever:** High-performance async web search and intelligent content packing
 6. **Topic Extraction System:** DSPy-based analysis for optimal search query generation
 7. **WordCountManager:** Manages length constraints and adjustments
 8. **FeedbackProcessor:** Converts scores into improvement instructions
 9. **IterationController:** Orchestrates the improvement loop with optimal models
+10. **ExportManager:** Handles version export with directory management
 
 ### Data Flow Patterns
 ```
 COMMAND-LINE ARGUMENTS
-    ↓ (model selection)
+    ↓ (model selection + export config)
 Enhanced Factory Pattern
     ↓ (model instances)
 SCORING_CRITERIA (li_article_judge.py)
     ↓ (import & parse)
 CriteriaExtractor
     ↓ (criteria summary)
+Parallel Generation System
+    ↓ (multiple versions with temperature variation)
 Fast RAG System (rag_fast.py)
     ↓ (topic extraction → async search → intelligent packing)
 ArticleGenerator (with generator_model + RAG context)
-    ↓ (generated article)
+    ↓ (generated articles)
 WordCountManager
     ↓ (word count validation)
 LinkedInArticleScorer (with judge_model)
     ↓ (score results)
-FeedbackProcessor
-    ↓ (improvement instructions)
-ArticleGenerator (next iteration with optimal model)
-```
-
-### Fast RAG Data Flow
-```
-Article Draft/Outline
-    ↓ (DSPy topic analysis)
-TopicExtractionSignature (with rag_model)
-    ↓ (main_topic, search_queries, needs_research)
-TavilyWebRetriever (async search)
-    ↓ (concurrent search + extract)
-Non-LLM Content Processing
-    ↓ (boilerplate removal + salient extraction)
-TextPacker (token-aware packing)
-    ↓ (optimized context string)
-ArticleGenerator (enhanced with web context)
-```
-
-### Model Selection Flow
-```
-CLI Arguments (--generator-model, --judge-model, --rag-model, --model)
-    ↓
-Model Resolution (component-specific or fallback)
-    ↓
-Factory Pattern (get_model_instance, create_component_lm)
-    ↓
-Model Instance Cache (performance optimization)
-    ↓
-Component Initialization (with dedicated models)
-    ↓
-Execution (optimal model per operation)
-```
-
-## DSPy Module Architecture
-
-### Fast RAG Signature Pattern
-```python
-class TopicExtractionSignature(dspy.Signature):
-    """Extract the main topic for web search from article draft or outline."""
-
-    draft_or_outline = dspy.InputField(
-        desc="Article draft or outline to analyze for main topic"
-    )
-
-    output: TopicExtractionResult = dspy.OutputField(
-        desc="Extracted main topic, search queries, and research needs flag"
-    )
-
-class TopicExtractionResult(BaseModel):
-    """Result structure for topic extraction."""
-
-    main_topic: str = Field(
-        ...,
-        description="Main topic/subject of the article for web search",
-    )
-    search_query: List[str] = Field(
-        ...,
-        description="A list of at most 3 optimized search queries to find relevant context for the topic",
-    )
-    needs_research: bool = Field(
-        ...,
-        description="Boolean: whether this topic would benefit from web research context",
-    )
-```
-
-### Signature Design Pattern
-```python
-class OptimizedSignature(dspy.Signature):
-    """Clear, specific task description"""
-    
-    # Input fields with detailed descriptions
-    input_field = dspy.InputField(desc="Specific description of expected input")
-    
-    # Output fields with validation criteria
-    output_field = dspy.OutputField(desc="Specific description of expected output")
-```
-
-### Enhanced Module Composition Pattern with Model Selection
-```python
-class CompositeModuleWithModels(dspy.Module):
-    def __init__(self, model1_name=None, model2_name=None):
-        super().__init__()
-        
-        # Component-specific models or fallback to global
-        if model1_name:
-            lm1 = create_component_lm(model1_name)
-            self.sub_module_1 = dspy.ChainOfThought(Signature1, lm=lm1)
-        else:
-            self.sub_module_1 = dspy.ChainOfThought(Signature1)
-            
-        if model2_name:
-            lm2 = create_component_lm(model2_name)
-            self.sub_module_2 = dspy.ChainOfThought(Signature2, lm=lm2)
-        else:
-            self.sub_module_2 = dspy.ChainOfThought(Signature2)
-    
-    def forward(self, inputs):
-        # Orchestrate sub-modules with optimal models
-        result1 = self.sub_module_1(**inputs)
-        result2 = self.sub_module_2(input=result1.output)
-        return combined_result
-```
-
-### Model-Aware Component Pattern
-```python
-class ModelAwareComponent(dspy.Module):
-    def __init__(self, model_name=None):
-        super().__init__()
-        self.model_name = model_name
-        
-        if model_name:
-            # Use dedicated model instance
-            self.lm = create_component_lm(model_name)
-            self.component = dspy.ChainOfThought(Signature, lm=self.lm)
-        else:
-            # Use global DSPy configuration
-            self.component = dspy.ChainOfThought(Signature)
-    
-    def forward(self, **inputs):
-        return self.component(**inputs)
+Version Comparison
+    ↓ (interactive selection)
+ExportManager
+    ↓ (directory-based export)
+Final Result
 ```
 
 ## Quality Assurance Patterns
@@ -277,7 +193,7 @@ class ModelAwareComponent(dspy.Module):
 2. **Generation Validation:** Verify article structure and completeness
 3. **Word Count Validation:** Check length constraints
 4. **Quality Validation:** Score against criteria
-5. **Output Validation:** Ensure final article meets all requirements
+5. **Export Validation:** Ensure proper file and directory creation
 
 ### Error Handling Pattern
 ```python
@@ -289,51 +205,33 @@ except GenerationError:
 except ScoringError:
     # Use cached scoring or manual review
     result = handle_scoring_failure(article)
+except ExportError:
+    # Handle directory creation or file write failures
+    result = handle_export_failure(version)
 ```
 
 ## Performance Optimization Patterns
 
-### Fast RAG Performance Strategy
-- **Async-First Architecture:** All I/O operations use asyncio for maximum concurrency
-- **LLM-Free Content Processing:** Eliminate expensive API calls during text cleaning
-- **Intelligent Content Filtering:** Prioritize factual, data-rich sentences
-- **Token-Aware Packing:** Use tiktoken for accurate budget management
-- **Batch Processing:** Process up to 20 URLs per Tavily extract call
-- **Concurrent Search:** Configurable semaphore for optimal request throughput
-- **Smart Deduplication:** Aggressive deduplication while maintaining content order
+### Thread-Safe Cache Strategy
+- **Module-Level Cache:** Single shared instance across components
+- **Async Lock Protection:** Prevent concurrent access corruption
+- **Atomic File Operations:** Temp file + rename for data integrity
+- **Thread Pool Isolation:** File I/O in separate threads
+- **Lazy Initialization:** Cache loads once when first needed
 
-### Enhanced Caching Strategy
-- **Criteria Caching:** Cache parsed criteria to avoid repeated parsing
-- **Model Instance Caching:** `_model_instance_cache` prevents redundant model creation
-- **Component LM Caching:** Reuse ConfiguredLM instances across operations
-- **Result Caching:** Store intermediate results for debugging
-- **Factory Pattern Optimization:** Single model instance creation per unique model name
-- **Topic Analysis Caching:** Cache topic extraction results for similar drafts
+### Parallel Generation Strategy
+- **Temperature Variation:** Different settings for diverse outputs
+- **Controlled Concurrency:** Configurable worker count
+- **Resource Management:** Efficient model instance reuse
+- **Version Tracking:** Complete metadata for each variant
+- **Interactive Selection:** User control over final version
 
-### Incremental Improvement Strategy
-- **Targeted Changes:** Focus improvements on specific weak areas
-- **Minimal Edits:** Preserve good content while fixing problems
-- **Progressive Enhancement:** Build quality incrementally
-- **Model-Optimized Improvements:** Use best model for each improvement type
-- **Cost-Aware Iterations:** Balance improvement quality with API costs
-- **Context-Enhanced Iterations:** Use RAG context to improve factual accuracy and depth
-- **Smart Research Integration:** Only fetch web context when topic analysis indicates benefit
-
-## Integration Patterns
-
-### Loose Coupling with li_article_judge.py
-- **Import-Based Integration:** Use Python imports rather than API calls
-- **Dynamic Loading:** Load criteria at runtime for flexibility
-- **Interface Stability:** Depend on stable data structures (SCORING_CRITERIA)
-- **Model-Agnostic Scoring:** Scoring system works with any configured model
-
-### Enhanced Extensibility Pattern
-- **Plugin Architecture:** Easy addition of new improvement modules
-- **Configurable Constraints:** Adjustable word count and score targets
-- **Modular Scoring:** Support for different scoring systems
-- **Model Plugin System:** Easy addition of new LLM providers and models
-- **Component Model Configuration:** Each component can use different models independently
-- **Fallback Chain:** Graceful degradation through model hierarchy
+### Export System Strategy
+- **Directory Management:** Automatic conflict resolution
+- **Atomic Operations:** Safe file creation and updates
+- **Metadata Tracking:** Complete version information
+- **Format Flexibility:** Markdown with front matter
+- **Summary Generation:** Comparative analysis in summary.md
 
 ## Monitoring and Debugging Patterns
 
@@ -344,30 +242,29 @@ class ProgressTracker:
         # Log progress metrics
         # Track model performance per operation
         # Identify improvement trends
-        # Detect convergence or divergence
-        # Monitor cost vs. quality trade-offs
+        # Monitor parallel generation metrics
+        # Track export operations
 ```
 
 ### Enhanced Debug Information Pattern
-- **Iteration Logging:** Track changes between iterations
+- **Iteration Logging:** Track changes between versions
 - **Model Usage Tracking:** Log which models used for each operation
-- **Score Breakdown:** Detailed category-by-category analysis with model attribution
-- **Improvement Tracing:** Map feedback to actual changes made
-- **Cost Tracking:** Monitor API usage and costs per model
-- **Performance Metrics:** Track model-specific response times and quality
+- **Score Breakdown:** Detailed category-by-category analysis
+- **Export Tracking:** Monitor file and directory operations
+- **Cache Statistics:** Track hit rates and storage efficiency
 
 ## Scalability Patterns
 
 ### Enhanced Batch Processing Pattern
 - **Multiple Articles:** Process multiple outlines in parallel
-- **Shared Model Instances:** Reuse cached models across articles and operations
-- **Optimized Resource Allocation:** Distribute expensive models efficiently
-- **Result Aggregation:** Collect and analyze batch results with model performance metrics
+- **Shared Resources:** Reuse cached models and data
+- **Export Organization:** Structured directory hierarchy
+- **Resource Management:** Controlled concurrency limits
+- **Result Aggregation:** Combined analysis and reporting
 
 ### Advanced Configuration Management Pattern
 - **Environment-Specific Settings:** Different targets for different use cases
 - **User Preferences:** Customizable quality and length preferences
-- **Model Configuration Profiles:** Predefined model combinations for different use cases
-- **Cost Budget Management:** Automatic model selection based on budget constraints
-- **A/B Testing Support:** Compare different model combinations and generation strategies
-- **Performance Profiling:** Track model effectiveness across different content types
+- **Model Configuration Profiles:** Predefined model combinations
+- **Export Settings:** Directory and format preferences
+- **Performance Profiling:** Track model effectiveness

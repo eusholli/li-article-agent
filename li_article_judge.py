@@ -26,7 +26,6 @@ import dspy
 from pydantic import BaseModel, Field, validator
 from attachments.dspy import Attachments
 from dspy_factory import DspyModelConfig
-from context_window_manager import ContextWindowManager, ContextWindowError
 from models import ArticleVersion, JudgementModel, ScoreResultModel, ArticleScoreModel
 import logging
 from word_count_manager import WordCountManager
@@ -606,7 +605,6 @@ class LinkedInArticleScorer(dspy.Module):
         super().__init__()
 
         self.models = models
-        self.context_manager = ContextWindowManager(models["judge"])
         self.criterion_scorer = dspy.ChainOfThought(ArticleCriterionScorer)
         self.feedback_generator = dspy.ChainOfThought(OverallFeedbackGenerator)
 
@@ -930,11 +928,11 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         length_status = self.word_count_manager.get_word_count_status(word_count)
         length_achieved = length_status["within_range"]
 
-        # Ensure there are at least two versions to compare
+        """# Ensure there are at least two versions to compare
         if len(article_versions) >= 2:
             judge_previous = self.compare_versions(article_versions)
             if judge_previous:
-                return dspy.Prediction(output=judge_previous)
+                return dspy.Prediction(output=judge_previous)"""
 
         # Latest version is best, proceed to score it
         score_prediction = self.scorer(article_text)
@@ -949,7 +947,7 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
             score_results, article_text, word_count
         )
         improvement_prompt = improvement_analysis["detailed_feedback"]
-        focus_areas = improvement_analysis["focus_summary"]
+        # focus_areas = improvement_analysis["focus_summary"]
 
         # Create the judgement model
         judgement = latest_version.judgement
@@ -1165,7 +1163,6 @@ class FastLinkedInArticleScorer(dspy.Module):
         super().__init__()
 
         self.models = models
-        self.context_manager = ContextWindowManager(models["judge"])
         self.comprehensive_scorer = dspy.ChainOfThought(ComprehensiveArticleScorer)
 
     def _prepare_criteria_json(self) -> str:
@@ -1572,9 +1569,7 @@ class CriteriaExtractor:
         generation_prompt.append("SCORING CRITERIA FOR ARTICLE GENERATION:")
         generation_prompt.append("Your article will be evaluated on these criteria:\n")
 
-        generation_prompt.append(
-            f"**Article Length** ({self.min_length} - {self.max_length} words):"
-        )
+        generation_prompt.append(f"**Article Length** (200 points total):")
         generation_prompt.append(
             f"As the top priority the article must be between {self.min_length} and {self.max_length} words in length."
         )
@@ -1608,12 +1603,13 @@ class CriteriaExtractor:
             generation_prompt.append("")
 
         generation_prompt.append("OPTIMIZATION PRIORITIES:")
+        generation_prompt.append("1. Article length is most important (200 points)")
         generation_prompt.append(
-            "1. Focus heavily on Strategic Deconstruction & Synthesis (75 points)"
+            "2. Focus heavily on Strategic Deconstruction & Synthesis (75 points)"
         )
-        generation_prompt.append("2. Emphasize First-Order Thinking (45 points)")
+        generation_prompt.append("3. Emphasize First-Order Thinking (45 points)")
         generation_prompt.append(
-            "3. Ensure strong engagement and professional authority"
+            "4. Ensure strong engagement and professional authority"
         )
 
         return "\n".join(generation_prompt)

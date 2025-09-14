@@ -28,6 +28,7 @@ class DspyModelConfig:
     cost_per_token: float
     provider: str
     description: str
+    temp: float
 
 
 def get_openrouter_model(
@@ -120,6 +121,7 @@ def get_openrouter_model(
                 max_tokens=max_output,
                 temperature=temp,
                 api_key=api_key,
+                transforms="middle-out",
             )
         except Exception as e:
             print(f"❌ Failed to create DSPy LM for {model_id}: {e}")
@@ -138,6 +140,7 @@ def get_openrouter_model(
             cost_per_token=lowest_cost,
             provider="openrouter",
             description=description,
+            temp=temp,
         )
     except requests.RequestException as e:
         print(f"❌ Failed to fetch models from OpenRouter API: {e}")

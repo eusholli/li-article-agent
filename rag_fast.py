@@ -29,7 +29,7 @@ import re
 from typing import Optional
 
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 
 # Load environment variables
 load_dotenv()
@@ -513,19 +513,17 @@ class TextPacker:
 async def retrieve_and_pack(
     draft_article: str,
     models: Dict[str, DspyModelConfig],
+    context_manager: ContextWindowManager,
     k: int = 6,
 ) -> Tuple[str, List[str]]:
 
     # Use centralized context window management for intelligent sizing
     try:
         # Use centralized context manager for RAG limit calculation
-        context_manager = ContextWindowManager(models["generator"])
         max_total_chars = context_manager.get_rag_limit()
         max_rag_tokens = context_manager.chars_to_tokens(max_total_chars)
         max_rag_tokens_per_doc = max_rag_tokens // k
-        print(
-            f"🧠 Using centralized RAG limit: {max_total_chars:,} chars (35% allocation)"
-        )
+        print(f"🧠 Using centralized RAG limit: {max_total_chars:,} chars")
     except Exception as e:
         logging.warning(
             f"Could not determine context window from manager, using default: {e}"

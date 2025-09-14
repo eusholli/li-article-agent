@@ -104,8 +104,8 @@ Choose your next action:
   3. 🏁 Finish with current version
 ```
 
-### Quiet Mode Enhancements
-When using `--quiet` flag, the system now shows the progress dashboard instead of full technical output, providing essential information without overwhelming details.
+### Verbose Mode Enhancements
+When using `--verbose` flag, the system shows detailed progress information and technical output, providing comprehensive feedback during the generation process.
 
 ### Business Value Translation
 Technical scores are translated into business outcomes:
@@ -113,6 +113,64 @@ Technical scores are translated into business outcomes:
 - **Strong (72%+)**: "Good foundation - add depth for maximum impact"
 - **Needs Work (56%+)**: "Solid draft - needs strategic refinement"
 - **Rework (<56%)**: "Needs fundamental restructuring"
+
+## Parallel Version Creation
+
+The system now supports generating multiple article versions in parallel with temperature variation for enhanced creativity and quality options.
+
+### How It Works
+
+1. **Temperature Variation**: Each version uses a different temperature setting (0.1, 0.5, 0.9) for diverse generation styles:
+   - **0.1 (Focused)**: Consistent, structured output with minimal variation
+   - **0.5 (Balanced)**: Standard creativity with good coherence
+   - **0.9 (Creative)**: Maximum creativity with more experimental approaches
+
+2. **Parallel Execution**: Uses DSPy's built-in Parallel module for concurrent processing with thread-safe operations
+
+3. **Version Comparison**: Interactive comparison table showing score, word count, and generation time for each version
+
+4. **Smart Selection**: Choose the best version manually, automatically select the highest-scoring version, or use single version mode
+
+### Usage Examples
+
+```bash
+# Generate 3 versions in parallel
+python main.py --versions 3 --file draft.txt
+
+# Generate 5 versions with custom models
+python main.py --versions 5 \
+               --generator-model "openrouter/anthropic/claude-3-sonnet" \
+               --file draft.txt
+
+# Compare versions without selection (for analysis)
+python main.py --versions 3 --compare-only --file draft.txt
+
+# Combine with export directory
+python main.py --versions 3 \
+               --export-dir parallel_versions \
+               --file draft.txt
+```
+
+### Version Comparison Output
+
+```
+📊 VERSION COMPARISON
+Version | Score | Word Count | Gen Time | Temperature | Status
+1       | 87.2% | 2,145      | 45.2s    | 0.1         | ✅ Success
+2       | 91.8% | 2,312      | 52.1s    | 0.5         | ✅ Success
+3       | 85.6% | 2,278      | 48.7s    | 0.9         | ✅ Success
+
+🎯 3 versions generated successfully
+📈 Best score: 91.8%
+⏱️  Fastest generation: 45.2s
+```
+
+### Interactive Selection
+
+When multiple versions are generated successfully, the system provides interactive selection:
+
+```
+🎯 SELECT BEST VERSION
 
 ## Command Line Interface
 
@@ -156,8 +214,19 @@ python main.py \
   --export-dir article_versions \
   --file draft.txt
 
-# Quiet mode (minimal output)
-python main.py --quiet --file draft.txt --output article.md
+# Generate multiple versions in parallel with temperature variation
+python main.py \
+  --versions 3 \
+  --file draft.txt
+
+# Compare versions without interactive selection
+python main.py \
+  --versions 3 \
+  --compare-only \
+  --file draft.txt
+
+# Verbose mode (detailed output)
+python main.py --verbose --file draft.txt --output article.md
 
 # Interactive mode with progress dashboard
 python main.py --file draft.txt  # Shows user-friendly progress and decision prompts
@@ -178,7 +247,9 @@ python main.py --file draft.txt  # Shows user-friendly progress and decision pro
 --output, -o             Output file path for generated article
 --export-dir             Directory name to save all generated versions to (automatic numbering if exists)
 --export-results         Export detailed results to JSON file
---quiet, -q              Suppress progress messages
+--versions               Number of parallel versions to generate (1-5, default: 1)
+--compare-only           Show version comparison without interactive selection
+--verbose, -v            Print verbose progress messages
 ```
 
 **Fast RAG Features**: The system automatically analyzes your draft using DSPy to extract optimal search queries. When beneficial, it uses high-performance async search with Tavily API to gather relevant context and intelligently packs it for optimal token usage.

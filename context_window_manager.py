@@ -54,9 +54,9 @@ class ContextWindowManager:
     """
 
     # Fixed allocation percentages
-    INSTRUCTION_PERCENTAGE = 0.50  # 40% for instructions/prompts
-    RAG_PERCENTAGE = 0.40  # 40% for RAG context
-    SAFETY_PERCENTAGE = 0.10  # 10% for safety margin
+    INSTRUCTION_PERCENTAGE = 0.40
+    RAG_PERCENTAGE = 0.30
+    SAFETY_PERCENTAGE = 0.30
 
     # Character to token conversion ratio
     CHARS_PER_TOKEN = 4
@@ -64,7 +64,7 @@ class ContextWindowManager:
     # Warning threshold (80% of available space)
     WARNING_THRESHOLD = 0.8
 
-    def __init__(self, model_config: DspyModelConfig, word_count_max: int):
+    def __init__(self, model_config: DspyModelConfig):
         """
         Initialize context window manager with model configuration.
 
@@ -73,7 +73,7 @@ class ContextWindowManager:
         """
         self.model_config = model_config
         self.context_window = model_config.context_window
-        self.max_output_tokens = word_count_max * 2  # Approx. 2 tokens per word
+        self.max_output_tokens = model_config.max_output_tokens
         self._budget = self._calculate_budget()
 
     def _calculate_budget(self) -> ContextWindowBudget:

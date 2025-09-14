@@ -311,9 +311,7 @@ class LinkedInArticleGenerator(dspy.Module):
         self.models = models
 
         # Initialize context window manager
-        self.context_manager = ContextWindowManager(
-            models["generator"], word_count_max=word_count_max
-        )
+        self.context_manager = ContextWindowManager(models["generator"])
 
         # Use the new A vs. B judge with encapsulated analysis logic
         self.judge = ComprehensiveLinkedInArticleJudge(
@@ -330,12 +328,7 @@ class LinkedInArticleGenerator(dspy.Module):
 
         # Initialize DSPy modules with optional model-specific LM instances
 
-        self.generator = dspy.Refine(
-            module=dspy.ChainOfThought(ArticleGenerationSignature),
-            N=5,  # Maximum refinement attempts for word count
-            reward_fn=self._word_count_reward,
-            threshold=1.0,
-        )
+        self.generator = dspy.ChainOfThought(ArticleGenerationSignature)
         self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
 
         # Track generation history
@@ -352,18 +345,26 @@ class LinkedInArticleGenerator(dspy.Module):
             print(f"📁 Using directory: {export_dir}")
         self.export_dir = export_dir
 
-    def _perform_rag_search(self, draft_text: str, verbose: bool = True) -> str:
+    def _perform_rag_search(
+        self, draft_text: str, verbose: bool = True, version_id: Optional[int] = None
+    ) -> str:
         """
         Perform comprehensive RAG search and return context with inline citations.
 
         Args:
             draft_text: The draft article text to extract search queries from
             verbose: Whether to print progress updates
+            version_id: Optional version identifier for parallel execution
 
         Returns:
             Context with inline citations
         """
         try:
+            # Print progress message for RAG search
+            if version_id is not None:
+                from main import print_version_rag_search
+
+                print_version_rag_search(version_id)
 
             ctx, urls = asyncio.run(
                 retrieve_and_pack(
@@ -399,7 +400,7 @@ class LinkedInArticleGenerator(dspy.Module):
         return dspy.Prediction(output=result)
 
     def generate_article(
-        self, initial_draft: str, verbose: bool = True
+        self, initial_draft: str, verbose: bool = True, version_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline.
@@ -407,14 +408,23 @@ class LinkedInArticleGenerator(dspy.Module):
         Args:
             initial_draft: Initial draft article or outline
             verbose: Whether to print progress updates
+            version_id: Optional version identifier for parallel execution
 
         Returns:
             Dict containing final article, score, and generation metadata
         """
-        return self.generate_article_with_context(initial_draft, "", verbose)
+        # Store version_id for use in progress messages
+        self._current_version_id = version_id
+        return self.generate_article_with_context(
+            initial_draft, "", verbose, version_id
+        )
 
     def generate_article_with_context(
-        self, initial_draft: str, context: str = "", verbose: bool = True
+        self,
+        initial_draft: str,
+        context: str = "",
+        verbose: bool = True,
+        version_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline with web context.
@@ -423,6 +433,7 @@ class LinkedInArticleGenerator(dspy.Module):
             initial_draft: Initial draft article or outline
             context: String containing relevant content with inline citations
             verbose: Whether to print progress updates
+            version_id: Optional version identifier for parallel execution
 
         Returns:
             Dict containing final article, score, and generation metadata
@@ -445,7 +456,7 @@ class LinkedInArticleGenerator(dspy.Module):
             )
 
         initial_article, initial_context = self._generate_initial_article(
-            initial_draft, context, verbose
+            initial_draft, context, verbose, version_id
         )
 
         # Store draft version with a pending judgement
@@ -523,6 +534,15 @@ class LinkedInArticleGenerator(dspy.Module):
                     recreate_ctx=self.recreate_ctx,
                     judgement=pending_judgement,  # Pending placeholder
                 )
+
+                # Print progress message for judging
+                if (
+                    hasattr(self, "_current_version_id")
+                    and self._current_version_id is not None
+                ):
+                    from main import print_version_judging
+
+                    print_version_judging(self._current_version_id)
 
                 # Judge with the temporary version included
                 prediction = self.judge(self.versions + [temp_version])
@@ -664,7 +684,11 @@ class LinkedInArticleGenerator(dspy.Module):
         return final_result
 
     def _generate_initial_article(
-        self, draft_or_outline: str, context: str, verbose: bool
+        self,
+        draft_or_outline: str,
+        context: str,
+        verbose: bool,
+        version_id: Optional[int] = None,
     ) -> Tuple[str, str]:
         """Generate initial markdown article from draft/outline using ArticleGenerationSignature.
 
@@ -678,7 +702,9 @@ class LinkedInArticleGenerator(dspy.Module):
                 "Performing comprehensive RAG search"
             )
 
-        context = context or self._perform_rag_search(draft_or_outline, verbose)
+        context = context or self._perform_rag_search(
+            draft_or_outline, verbose, version_id
+        )
 
         if verbose and context:
             print(f"📚 Using context: {len(context)} characters")
@@ -687,6 +713,12 @@ class LinkedInArticleGenerator(dspy.Module):
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
 
         try:
+            # Print progress message for initial generation
+            if version_id is not None:
+                from main import print_version_generation
+
+                print_version_generation(version_id, "initial")
+
             # Validate context window before generation
             content_parts = {
                 "draft": draft_or_outline,
@@ -776,6 +808,17 @@ class LinkedInArticleGenerator(dspy.Module):
                 # Validate again to ensure it now fits
                 self.context_manager.validate_content(content_parts)
 
+            # Print progress message for improvement generation
+            if (
+                hasattr(self, "_current_version_id")
+                and self._current_version_id is not None
+            ):
+                from main import print_version_generation
+
+                print_version_generation(
+                    self._current_version_id, f"iteration {self.iteration}"
+                )
+
             # Generate improved article using judge's improvement prompt
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.improver(
@@ -793,16 +836,6 @@ class LinkedInArticleGenerator(dspy.Module):
                     f"⚠️ Improvement generation failed, returning current article: {e}"
                 )
             return current_article, context or ""
-
-    def _word_count_reward(self, args, pred: dspy.Prediction) -> float:
-        """Reward function for dspy.Refine - returns 1.0 if word count is acceptable."""
-        article_text = pred.generated_article
-        word_count = self.word_count_manager.count_words(article_text)
-        within_range = self.word_count_manager.is_within_range(word_count)
-        print(
-            f"In word count reward function, count is {word_count}, within range: {within_range}"
-        )
-        return 1.0 if within_range else 0.0
 
     def _get_original_draft(self) -> str:
         """Get the original draft for reference during improvements."""

@@ -121,7 +121,7 @@ def get_openrouter_model(
                 max_tokens=max_output,
                 temperature=temp,
                 api_key=api_key,
-                transforms="middle-out",
+                # extras={"transforms": "[middle-out]"}
             )
         except Exception as e:
             print(f"❌ Failed to create DSPy LM for {model_id}: {e}")

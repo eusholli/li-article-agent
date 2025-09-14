@@ -31,6 +31,54 @@ import mlflow
 # Default model constant for fallback
 DEFAULT_MODEL_NAME = "moonshotai/kimi-k2:free"
 
+
+def print_version_progress(version_id: int, message: str, emoji: str = "📝"):
+    """
+    Print a version-specific progress message that is always visible.
+
+    Args:
+        version_id: The version number (1, 2, 3, etc.)
+        message: The progress message
+        emoji: Optional emoji to display
+    """
+    print(f"[{emoji} VERSION {version_id}] {message}")
+
+
+def print_version_start(version_id: int):
+    """Print version start message."""
+    print_version_progress(version_id, "Starting generation process...", "🚀")
+
+
+def print_version_rag_search(version_id: int):
+    """Print version RAG search start message."""
+    print_version_progress(version_id, "Searching web for relevant context...", "🌐")
+
+
+def print_version_generation(version_id: int, phase: str = "initial"):
+    """Print version generation start message."""
+    if phase == "initial":
+        print_version_progress(version_id, "Creating initial article draft...", "✍️")
+    else:
+        print_version_progress(version_id, f"Improving article ({phase})...", "🔄")
+
+
+def print_version_judging(version_id: int):
+    """Print version judging start message."""
+    print_version_progress(version_id, "Evaluating article quality...", "🎯")
+
+
+def print_version_complete(
+    version_id: int, score: Optional[float] = None, success: bool = True
+):
+    """Print version completion message."""
+    if success and score is not None:
+        print_version_progress(version_id, f"Completed with score: {score:.1f}%", "✅")
+    elif success:
+        print_version_progress(version_id, "Completed successfully", "✅")
+    else:
+        print_version_progress(version_id, "Failed to generate", "❌")
+
+
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 mlflow.set_experiment(f"DSPy LinkedIn {current_time}")
 mlflow.dspy.autolog()  # Automatically log DSPy runs to MLflow
@@ -183,13 +231,25 @@ def run_parallel_generation(
     # Prepare parallel execution calls
     parallel_calls = []
     for i, generator in enumerate(generators):
+        version_num = i + 1
+
         # Create a wrapper function for each generator
-        def make_generate_call(gen, draft, version_num=i + 1):
+        def make_generate_call(gen, draft, version_num=version_num):
             def generate_call():
                 try:
+                    # Print version start message
+                    print_version_start(version_num)
+
                     start_time = time.time()
-                    result = gen.generate_article(draft, verbose=verbose)
+                    result = gen.generate_article(
+                        draft, verbose=verbose, version_id=version_num
+                    )
                     generation_time = time.time() - start_time
+
+                    # Print version completion message
+                    final_score = result.get("final_score")
+                    score_value = final_score.percentage if final_score else None
+                    print_version_complete(version_num, score=score_value, success=True)
 
                     return {
                         "version": version_num,
@@ -201,6 +261,8 @@ def run_parallel_generation(
                         ),
                     }
                 except Exception as e:
+                    # Print version failure message
+                    print_version_complete(version_num, success=False)
                     return {
                         "version": version_num,
                         "success": False,
@@ -467,7 +529,8 @@ Target Scores:
     )
     parser.add_argument(
         "--export-dir",
-        help="Directory name to save all generated versions to (automatic numbering if exists)",
+        help="Directory name to save all generated versions to (automatic numbering if exists). Defaults to versions-YYYYMMDD_HHMMSS",
+        default=f"versions-{current_time}",
     )
 
     # Parallel execution options
@@ -499,12 +562,21 @@ Target Scores:
 
         try:
             resolved_generator = resolve_model(
-                args.generator_model, args.model, DEFAULT_MODEL_NAME, temp=0.5
+                args.generator_model,
+                args.model,
+                DEFAULT_MODEL_NAME,
+                temp=0.5,
             )
             resolved_judge = resolve_model(
-                args.judge_model, args.model, DEFAULT_MODEL_NAME
+                args.judge_model,
+                args.model,
+                DEFAULT_MODEL_NAME,
             )
-            resolved_rag = resolve_model(args.rag_model, args.model, DEFAULT_MODEL_NAME)
+            resolved_rag = resolve_model(
+                args.rag_model,
+                args.model,
+                DEFAULT_MODEL_NAME,
+            )
         except RuntimeError as e:
             print(f"{e}")
             sys.exit(1)
@@ -524,6 +596,7 @@ Target Scores:
             lm=resolved_generator.dspy_lm,
             async_max_workers=4,
         )
+        # dspy.enable_litellm_logging()
 
         # Get article draft
         if args.draft:

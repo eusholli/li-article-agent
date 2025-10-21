@@ -107,7 +107,7 @@ def get_openrouter_model(
         context_length = selected_model.get("context_length", 4096)
 
         # Get max output tokens (use a reasonable default if not specified)
-        max_output = max(4096, context_length // 4)  # Conservative estimate
+        max_output = max(4096, context_length // 2)  # Used to be 4, too small
 
         # Create DSPy LM instance
         api_key = os.getenv("OPENROUTER_API_KEY")

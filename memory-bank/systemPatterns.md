@@ -158,6 +158,7 @@ class LinkedInArticleGenerator:
 8. **FeedbackProcessor:** Converts scores into improvement instructions
 9. **IterationController:** Orchestrates the improvement loop with optimal models
 10. **ExportManager:** Handles version export with directory management
+11. **FactChecker (fc_oc_v2.py):** One-call fact-checking with auto-correction
 
 ### Data Flow Patterns
 ```

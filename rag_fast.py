@@ -27,6 +27,7 @@ from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager
 import re
 from typing import Optional
+from output_manager import OutputManager
 
 
 logging.basicConfig(level=logging.WARNING)
@@ -514,6 +515,7 @@ async def retrieve_and_pack(
     draft_article: str,
     models: Dict[str, DspyModelConfig],
     context_manager: ContextWindowManager,
+    output_manager: OutputManager,
     k: int = 6,
 ) -> Tuple[str, List[str]]:
 
@@ -523,7 +525,6 @@ async def retrieve_and_pack(
         max_total_chars = context_manager.get_rag_limit()
         max_rag_tokens = context_manager.chars_to_tokens(max_total_chars)
         max_rag_tokens_per_doc = max_rag_tokens // k
-        print(f"🧠 Using centralized RAG limit: {max_total_chars:,} chars")
     except Exception as e:
         logging.warning(
             f"Could not determine context window from manager, using default: {e}"
@@ -538,13 +539,16 @@ async def retrieve_and_pack(
 
     if topic_results.needs_research:
         queries = topic_results.search_query
-        print(f"Main topic identified: {topic_results.main_topic}")
-        print(f"🔍 Extracted search queries: {queries}")
         queries = [
             topic_results.main_topic
         ] + queries  # Always include main topic at the front
+
+        output_manager.print_version_context_query(queries)
+
     else:
-        print("No research needed based on topic extraction.")
+        output_manager.print_version_message(
+            "No research needed based on topic extraction."
+        )
         return "", []
 
     tavily = TavilySettings(

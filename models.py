@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field
 class ArticleVersion:
     """Represents a version of an article with its metadata."""
 
-    version: int
+    writer_id: int
+    version_id: int
     content: str
     context: str
     recreate_ctx: bool
@@ -64,6 +65,11 @@ class JudgementModel(BaseModel):
 
     overall_feedback: Optional[str] = Field(
         None, description="Comprehensive feedback (optional for detailed analysis)"
+    )
+
+    # Fact-checking results (optional, only populated when fact-checking runs)
+    fact_check_result: Optional["FactCheckResult"] = Field(
+        None, description="Fact-checking results if fact-checking was performed"
     )
 
 
@@ -131,4 +137,47 @@ class ArticleScoreModel(BaseModel):
     )
     word_count: Optional[int] = Field(
         None, description="Current word count of the article being scored"
+    )
+
+
+# ==========================================================================
+# FACT-CHECKING MODELS
+# ==========================================================================
+
+
+class FactCheckResult(BaseModel):
+    """
+    📋 PYDANTIC MODEL: Complete Fact-Checking Results
+
+    Comprehensive results of fact-checking an article, including all validations,
+    suggestions, and overall assessment. This model is used to track fact-checking
+    status and integrate with the existing judging system.
+    """
+
+    total_claims_found: int = Field(
+        ..., description="Total number of factual claims identified"
+    )
+    claims_with_citations: int = Field(
+        ..., description="Number of claims that already have citations"
+    )
+    valid_citations: int = Field(..., description="Number of citations that are valid")
+    invalid_citations: int = Field(
+        ..., description="Number of citations that are invalid"
+    )
+    uncited_claims: int = Field(
+        ..., description="Number of factual claims without citations"
+    )
+
+    fact_check_passed: bool = Field(
+        ..., description="Whether the article passes fact-checking requirements"
+    )
+    improvement_needed: bool = Field(
+        ..., description="Whether improvements are needed for fact-checking compliance"
+    )
+
+    summary_feedback: str = Field(
+        ..., description="Summary of fact-checking results and recommendations"
+    )
+    detailed_feedback: str = Field(
+        ..., description="Detailed feedback with specific actions needed"
     )

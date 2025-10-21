@@ -15,6 +15,9 @@ import asyncio
 import os
 from pathlib import Path
 import traceback
+import logging
+
+logging.basicConfig(level=logging.WARNING)
 
 
 from models import ArticleVersion, JudgementModel
@@ -24,6 +27,7 @@ from dspy_factory import DspyModelConfig
 from context_window_manager import ContextWindowManager, ContextWindowError
 from rag_fast import retrieve_and_pack
 from progress_dashboard import ProgressDashboard, UserInteractionManager
+from output_manager import OutputManager
 
 
 class ArticleGenerationSignature(dspy.Signature):
@@ -71,11 +75,18 @@ class ArticleGenerationSignature(dspy.Signature):
 
 class ArticleImprovementSignature(dspy.Signature):
     """Improve an existing article based on scoring feedback and criteria while maintaining consistency with original draft.
-    WORD LENGTH REQUIREMENT:
-    - The top priority is to to generate an article of the wanted length range
-    - If expansion is needed, focus on areas that improve both length and quality
-    - If condensation is needed, preserve all key insights and arguments
-    - Use the scoring criteria to strategically adjust content length while maintaining article quality
+
+    ⚠️ CRITICAL LENGTH REQUIREMENT ⚠️
+    - You MUST generate an article within the target_word_count range
+    - Current article has current_word_count words
+    - If current_word_count < target_word_count_min: ADD content to reach minimum
+    - If current_word_count > target_word_count_max: CONDENSE to stay within maximum
+    - This is NOT optional - length compliance is mandatory for acceptance
+
+    WORD LENGTH STRATEGY:
+    - When expanding: Focus on the high-priority suggestions in score_feedback to add quality content
+    - When condensing: Preserve core arguments and remove redundancy
+    - Balance quality improvements with length requirements
 
     MARKDOWN FORMATTING:
     - Use clear header hierarchy (# ## ###)
@@ -91,12 +102,15 @@ class ArticleImprovementSignature(dspy.Signature):
     - Present analysis, opinions, and synthesis as uncited content
 
     CONTENT REQUIREMENTS:
-    - Expand the draft/outline into a comprehensive LinkedIn article
+    - Apply improvements from score_feedback while meeting length requirements
     - Maintain professional LinkedIn tone and structure
     - Objective and third-person, with a more structured, business/technical tone
-    - Address all key points from the original draft"""
+    - Preserve all key points from the original draft"""
 
     current_article = dspy.InputField(desc="Current version of the article")
+    current_word_count = dspy.InputField(desc="Current article word count (integer)")
+    target_word_count_min = dspy.InputField(desc="Minimum target word count (integer)")
+    target_word_count_max = dspy.InputField(desc="Maximum target word count (integer)")
     original_draft = dspy.InputField(
         desc="Original draft for reference to maintain key points"
     )
@@ -105,11 +119,11 @@ class ArticleImprovementSignature(dspy.Signature):
         default="",
     )
     score_feedback = dspy.InputField(
-        desc="Detailed scoring feedback and improvement suggestions"
+        desc="Detailed scoring feedback and improvement suggestions (length requirements already specified in dedicated fields above)"
     )
 
     improved_article = dspy.OutputField(
-        desc="The improved article meeting all the above requirements."
+        desc="The improved article meeting ALL requirements above, especially the word count range."
     )
 
 
@@ -124,160 +138,15 @@ class LinkedInArticleGenerator(dspy.Module):
     4. Iteratively improve until target score (≥89%) is achieved
     """
 
-    class VerboseManager:
-        """Centralized manager for beautiful, structured verbose output."""
-
-        def __init__(self, generator_instance):
-            self.generator = generator_instance
-
-        def print_section_header(self, title: str, emoji: str = "📋"):
-            """Print a formatted section header with borders."""
-            border = "=" * 60
-            print(f"\n{border}")
-            print(f"{emoji} {title.upper()}")
-            print(f"{border}")
-
-        def print_generation_start(self):
-            """Print beautiful generation start header with all key parameters."""
-            self.print_section_header("LinkedIn Article Generation Process", "🚀")
-
-            print("📊 CONFIGURATION PARAMETERS:")
-            print(f"  • Target Score: ≥{self.generator.target_score_percentage}%")
-            print(f"  • Max Iterations: {self.generator.max_iterations}")
-            print(
-                f"  • Word Count Range: {self.generator.word_count_manager.target_min}-{self.generator.word_count_manager.target_max}"
-            )
-            print(f"  • Generator Model: {self.generator.models['generator'].name}")
-            print(f"  • Judge Model: {self.generator.models['judge'].name}")
-            print(f"  • RAG Model: {self.generator.models['rag'].name}")
-            print(f"  • Recreate Context: {self.generator.recreate_ctx}")
-
-        def print_iteration_status(self, iteration: int, version: "ArticleVersion"):
-            """Print rich iteration status with scores and metrics."""
-            print(f"\n🔄 ITERATION {iteration}: SCORING AND ANALYSIS")
-            print("-" * 50)
-
-            judgement = version.judgement
-            print("📊 CURRENT STATUS:")
-
-            if judgement.improvement_prompt:
-                print(f"\n🔍 IMPROVEMENT GUIDANCE:")
-                print(f"  {judgement.improvement_prompt}")
-
-            print(f"  • Version: {version.version}")
-            print(
-                f"  • Score: {judgement.total_score}/{judgement.max_score} ({judgement.percentage:.1f}%)"
-            )
-            print(f"  • Target: ≥{self.generator.target_score_percentage}%")
-            print(f"  • Word Count: {judgement.word_count} words")
-            print(
-                f"  • Target Range: {self.generator.word_count_manager.target_min}-{self.generator.word_count_manager.target_max}"
-            )
-
-        def print_rag_status(
-            self, context_length: int, urls: Optional[List[str]] = None
-        ):
-            """Print RAG search results and context information."""
-            print("🌐 RAG SEARCH RESULTS:")
-            if context_length > 0:
-                print(f"  ✅ Retrieved context: {context_length} characters")
-                if urls:
-                    print(f"  📚 Source URLs: {len(urls)} found")
-                    for i, url in enumerate(urls[:3], 1):  # Show first 3 URLs
-                        print(f"    {i}. {url}")
-                    if len(urls) > 3:
-                        print(f"    ... and {len(urls) - 3} more")
-                else:
-                    print("  📚 Source URLs: None specified")
-            else:
-                print("  ⚠️ No context retrieved from RAG search")
-
-        def print_context_reuse(self, context_length: int, recreate_ctx: bool):
-            """Print context reuse or fresh search status."""
-            if recreate_ctx:
-                print("🌐 CONTEXT STRATEGY:")
-                print("  🔄 Performing fresh RAG search (recreate_ctx=True)")
-            else:
-                print("🌐 CONTEXT STRATEGY:")
-                print(f"  🔄 Reusing initial context: {context_length} characters")
-                print("  📋 recreate_ctx=False - maintaining consistency")
-
-        def print_generation_phase(self, phase: str, details: str = ""):
-            """Print generation phase status."""
-            print(f"\n📝 {phase.upper()}")
-            if details:
-                print(f"  {details}")
-
-        def print_final_summary(self, final_result: Dict[str, Any]):
-            """Print comprehensive final summary with all metrics."""
-            self.print_section_header("Final Results", "🏆")
-
-            final_score = final_result["final_score"]
-            improvement_summary = final_result["improvement_summary"]
-
-            print("📊 FINAL METRICS:")
-            print(
-                f"  • Final Score: {final_score.total_score}/{final_score.max_score} ({final_score.percentage:.1f}%)"
-            )
-            print(f"  • Target Score: ≥{self.generator.target_score_percentage}%")
-            print(
-                f"  • Target Achieved: {'✅ YES' if final_result['target_achieved'] else '❌ NO'}"
-            )
-            print(
-                f"  • Quality Achieved: {'✅ YES' if final_result['quality_achieved'] else '❌ NO'}"
-            )
-            print(
-                f"  • Length Achieved: {'✅ YES' if final_result['length_achieved'] else '❌ NO'}"
-            )
-            print(
-                f"  • Iterations Used: {final_result['iterations_used']}/{self.generator.max_iterations}"
-            )
-            print(f"  • Final Word Count: {final_result['word_count']} words")
-
-            if len(self.generator.versions) > 1:
-                print("\n📈 IMPROVEMENT SUMMARY:")
-                print(
-                    f"  • Score Improvement: +{improvement_summary['score_improvement']:.1f}%"
-                )
-                print(
-                    f"  • Word Count Change: {improvement_summary['word_count_change']:+d} words"
-                )
-                print(
-                    f"  • Versions Created: {improvement_summary['versions_created']}"
-                )
-
-            print("\n📋 GENERATION LOG:")
-            for log_entry in final_result["generation_log"]:
-                print(f"  • {log_entry}")
-
-            if final_result["target_achieved"]:
-                print("\n🎉 SUCCESS! Article achieved world-class status!")
-            else:
-                print(
-                    f"\n💡 Continue improving to reach the {self.generator.target_score_percentage}% target."
-                )
-
-        def print_variable_dump(
-            self, variables: Dict[str, Any], title: str = "Variable Dump"
-        ):
-            """Print debug dump of key variables."""
-            print(f"\n🔧 {title.upper()}")
-            print("-" * 40)
-            for key, value in variables.items():
-                if isinstance(value, (int, float)):
-                    print(f"  • {key}: {value}")
-                elif isinstance(value, str) and len(value) > 100:
-                    print(f"  • {key}: {value[:100]}... (truncated)")
-                else:
-                    print(f"  • {key}: {value}")
-
     def __init__(
         self,
+        writer_id: int,
         target_score_percentage: float,
         max_iterations: int,
         word_count_min: int,
         word_count_max: int,
         models: Dict[str, DspyModelConfig],
+        verbose: bool,
         recreate_ctx: bool = False,
         auto: bool = False,
         export_dir: Optional[str] = None,
@@ -297,11 +166,13 @@ class LinkedInArticleGenerator(dspy.Module):
 
         super().__init__()
 
+        self.writer_id = writer_id
+        self.version_id = 1  # Start with version 1 for the initial draft
         self.target_score_percentage = target_score_percentage
         self.max_iterations = max_iterations
 
-        # Initialize VerboseManager for beautiful verbose output
-        self.verbose_manager = self.VerboseManager(self)
+        # Initialize OutputManager for beautiful verbose output
+        self.output_manager = OutputManager(writer_id, version_id=1, verbose=True)
 
         # Initialize progress dashboard and user interaction manager
         self.dashboard = ProgressDashboard()
@@ -332,7 +203,6 @@ class LinkedInArticleGenerator(dspy.Module):
         self.improver = dspy.ChainOfThought(ArticleImprovementSignature)
 
         # Track generation history
-        self.iteration = 0
         self.versions: List[ArticleVersion] = []
         self.generation_log: List[str] = []
         self.original_draft: Optional[str] = None
@@ -342,89 +212,59 @@ class LinkedInArticleGenerator(dspy.Module):
         if export_dir:
             # Use command-line specified directory with automatic numbering
             export_dir = self._resolve_directory_name(export_dir)
-            print(f"📁 Using directory: {export_dir}")
         self.export_dir = export_dir
 
+        self.verbose = verbose
+
     def _perform_rag_search(
-        self, draft_text: str, verbose: bool = True, version_id: Optional[int] = None
+        self, draft_text: str, version_id: Optional[int] = None
     ) -> str:
         """
         Perform comprehensive RAG search and return context with inline citations.
 
         Args:
             draft_text: The draft article text to extract search queries from
-            verbose: Whether to print progress updates
             version_id: Optional version identifier for parallel execution
 
         Returns:
             Context with inline citations
         """
         try:
-            # Print progress message for RAG search
-            if version_id is not None:
-                from main import print_version_rag_search
-
-                print_version_rag_search(version_id)
-
             ctx, urls = asyncio.run(
                 retrieve_and_pack(
-                    draft_text, models=self.models, context_manager=self.context_manager
+                    draft_text,
+                    models=self.models,
+                    context_manager=self.context_manager,
+                    output_manager=self.output_manager,
                 )
             )
-
-            if verbose:
-                self.verbose_manager.print_rag_status(len(ctx), urls)
 
             if ctx:
                 return ctx
             else:
-                if verbose:
-                    print("⚠️ No valid content retrieved from RAG search")
                 return ""
 
         except Exception as e:
-            if verbose:
-                print(f"⚠️ RAG search failed: {e}")
+            logging.error(f"⚠️ RAG search failed: {e}")
             return ""
 
-    def forward(self, initial_draft: str, verbose: bool = True) -> dspy.Prediction:
-
-        result = self.generate_article(initial_draft, verbose)
-        return dspy.Prediction(output=result)
-
-    async def aforward(
-        self, initial_draft: str, verbose: bool = True
-    ) -> dspy.Prediction:
-
-        result = self.generate_article(initial_draft, verbose)
-        return dspy.Prediction(output=result)
-
-    def generate_article(
-        self, initial_draft: str, verbose: bool = True, version_id: Optional[int] = None
-    ) -> Dict[str, Any]:
+    def generate_article(self, initial_draft: str) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline.
 
         Args:
             initial_draft: Initial draft article or outline
-            verbose: Whether to print progress updates
-            version_id: Optional version identifier for parallel execution
 
         Returns:
             Dict containing final article, score, and generation metadata
         """
-        # Store version_id for use in progress messages
-        self._current_version_id = version_id
-        return self.generate_article_with_context(
-            initial_draft, "", verbose, version_id
-        )
+        self.output_manager.print_version_start()
+        return self.generate_article_with_context(initial_draft, "")
 
     def generate_article_with_context(
         self,
         initial_draft: str,
         context: str = "",
-        verbose: bool = True,
-        version_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Generate a world-class LinkedIn article from a draft or outline with web context.
@@ -432,14 +272,10 @@ class LinkedInArticleGenerator(dspy.Module):
         Args:
             initial_draft: Initial draft article or outline
             context: String containing relevant content with inline citations
-            verbose: Whether to print progress updates
-            version_id: Optional version identifier for parallel execution
 
         Returns:
             Dict containing final article, score, and generation metadata
         """
-        if verbose:
-            self.verbose_manager.print_generation_start()
 
         # Clear previous generation data
         self.versions.clear()
@@ -447,20 +283,12 @@ class LinkedInArticleGenerator(dspy.Module):
         self.original_draft = initial_draft
         self.search_context = context or ""
 
-        if context and verbose:
-            print(f"🌐 Using web context: {len(context)} URLs")
-
-        if verbose:
-            self.verbose_manager.print_generation_phase(
-                "Generating initial markdown article from draft"
-            )
-
         initial_article, initial_context = self._generate_initial_article(
-            initial_draft, context, verbose, version_id
+            initial_draft, context
         )
 
         # Store draft version with a pending judgement
-        draft_judgement = JudgementModel(
+        initial_draft_judgement = JudgementModel(
             total_score=0,
             max_score=100,
             percentage=0.0,
@@ -469,31 +297,32 @@ class LinkedInArticleGenerator(dspy.Module):
             meets_requirements=False,
             improvement_prompt="There is no improvement guidance since this is the user-provided draft, that will not be judged.",
             overall_feedback=None,  # Optional field for comprehensive feedback
+            fact_check_result=None,  # Optional field for fact-checking results
         )
 
         # Create a temporary version for judging
-        draft_version = ArticleVersion(
-            version=self.iteration,
+        initial_draft_version = ArticleVersion(
+            writer_id=self.writer_id,
+            version_id=0,  # Version 0 for the initial draft
             content=initial_draft,
             context=initial_context,
             recreate_ctx=self.recreate_ctx,
-            judgement=draft_judgement,
+            judgement=initial_draft_judgement,
         )
 
-        self.versions.append(draft_version)
+        self.versions.append(initial_draft_version)
 
         # Start iterative improvement process with the generated article
         final_result = self._iterative_improvement_process(
-            initial_article, initial_context, verbose
+            initial_article, initial_context
         )
 
-        if verbose:
-            self.verbose_manager.print_final_summary(final_result)
+        self.output_manager.print_final_summary(final_result, self)
 
         return final_result
 
     def _iterative_improvement_process(
-        self, initial_article: str, initial_context: str, verbose: bool
+        self, initial_article: str, initial_context: str
     ) -> Dict[str, Any]:
         """Run the iterative improvement process with user interaction and combined quality and length validation."""
         current_article = initial_article
@@ -503,16 +332,9 @@ class LinkedInArticleGenerator(dspy.Module):
 
         try:
             # Ensure at least one iteration runs to get a judgement
-            while self.iteration < max(1, self.max_iterations):
-                self.iteration += 1
+            while self.version_id <= max(1, self.max_iterations):
 
                 word_count = self.word_count_manager.count_words(current_article)
-
-                # Print article version before judging
-                if verbose:
-                    self._print_article_version_before_judging(
-                        current_article, self.iteration, word_count
-                    )
 
                 # Create a pending judgement for the temporary version
                 pending_judgement = JudgementModel(
@@ -524,45 +346,34 @@ class LinkedInArticleGenerator(dspy.Module):
                     meets_requirements=False,
                     improvement_prompt="Pending analysis - this is a temporary placeholder that will be replaced with actual improvement guidance from the comprehensive judge.",
                     overall_feedback=None,  # Optional field for comprehensive feedback
+                    fact_check_result=None,  # Optional field for fact-checking results
                 )
 
                 # Create a temporary version for judging
                 temp_version = ArticleVersion(
-                    version=self.iteration,
+                    writer_id=self.writer_id,
+                    version_id=self.version_id,
                     content=current_article,
                     context=current_context,
                     recreate_ctx=self.recreate_ctx,
                     judgement=pending_judgement,  # Pending placeholder
                 )
 
-                # Print progress message for judging
-                if (
-                    hasattr(self, "_current_version_id")
-                    and self._current_version_id is not None
-                ):
-                    from main import print_version_judging
-
-                    print_version_judging(self._current_version_id)
-
                 # Judge with the temporary version included
+                self.output_manager.print_version_judging()
                 prediction = self.judge(self.versions + [temp_version])
 
                 # Judged version to append
                 version = prediction.output  # This is the real judgement
                 judgement = version.judgement
+                self.output_manager.print_version_judgement(judgement)
                 self.versions.append(version)
 
-                # Print judging results after judging
-                if verbose:
-                    self._print_judging_results_after_judging(version)
-
                 self.generation_log.append(
-                    f"Version {version.version}: Improved article ({version.judgement.word_count} words, improvement {version.judgement.improvement_prompt})"
+                    f"Version {version.version_id}: Improved article ({version.judgement.word_count} words, improvement {version.judgement.improvement_prompt})"
                 )
 
                 if self.auto == False:
-                    # In non-auto mode, always print iteration status
-                    self.verbose_manager.print_iteration_status(self.iteration, version)
 
                     keep_asking = True
                     while keep_asking:
@@ -571,9 +382,7 @@ class LinkedInArticleGenerator(dspy.Module):
 
                         if user_decision == "finish":
                             keep_asking = False  # Default to not asking again
-                            # break out of loop while self.iteration < max(1, self.max_iterations): to finish
-                            if verbose:
-                                print("🏁 User chose to finish the generation process.")
+                            # break out of loop while self.version_id < max(1, self.max_iterations): to finish
                             finish_requested = True
 
                         elif user_decision == "instructions":
@@ -583,11 +392,20 @@ class LinkedInArticleGenerator(dspy.Module):
                             if user_instructions:
                                 judgement.improvement_prompt = f"""THESE ARE NEW INSTRUCTIONS:
     <NEW>
-    {user_instructions}
+    PRIORITIZE THE FOLLOWING USER INSTRUCTIONS FOR THE NEXT IMPROVEMENT ITERATION:
+    {user_instructions}\n\n
+    FOLLOWING ARE THE GENERATED IMPROVEMENT GUIDANCE BELOW:
+    {judgement.improvement_prompt}
     <NEW/>"""
                         elif user_decision == "export":
                             self._export_version_to_directory(self.export_dir)
                             continue  # Return to menu after export
+                        elif user_decision == "fact_check":
+                            # Export non-fact-checked version first
+                            self._export_version_to_directory(self.export_dir)
+                            # Then perform fact-checking
+                            self._perform_fact_check_on_version(version)
+                            continue  # Return to menu after fact-checking
                         # Continue with improvement if "continue" or "instructions" was selected
                         elif user_decision == "continue":
                             keep_asking = False  # Exit the loop to continue improving
@@ -598,35 +416,31 @@ class LinkedInArticleGenerator(dspy.Module):
                     # Export version immediately if auto mode and export_dir is set
                     if self.export_dir:
                         self._export_single_version(version, self.export_dir)
+
                     # Check if targets are achieved using the judge's decision
                     if version.judgement.meets_requirements:
-                        if verbose:
-                            print(
-                                f"🎉 BOTH TARGETS ACHIEVED! Article reached world-class status with optimal length!"
-                            )
+
+                        # Automatically perform fact-checking when targets are met
+                        print(
+                            "\n🎯 Quality and length targets achieved - performing automatic fact-checking..."
+                        )
+                        self._perform_fact_check_on_version(version)
 
                         self.generation_log.append(
-                            f"Iteration {self.iteration}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
+                            f"Version {self.version_id}: Both targets achieved (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count}) - Fact-checked"
                         )
 
                         break  # Exit loop if both targets are met
 
-                    else:
-                        if verbose:
-                            f"⚠️ Iteration {self.iteration}: Targets not yet achieved: (Score: {version.judgement.percentage:.1f}%, Words: {version.judgement.word_count})"
-
                 if finish_requested:
                     break
 
-                # Generate improved version using the judge's improvement prompt
-                if verbose:
-                    self.verbose_manager.print_generation_phase(
-                        "Generating improved version"
-                    )
-
+                # Start next generation version
+                self.version_id += 1
+                self.output_manager.set_version_id(self.version_id)
                 improved_article, used_context = (
                     self._generate_improved_version_with_judgement(
-                        current_article, judgement, verbose
+                        current_article, judgement
                     )
                 )
 
@@ -635,18 +449,17 @@ class LinkedInArticleGenerator(dspy.Module):
 
             # Auto-export if export_dir is specified and we have versions to export
             if self.export_dir and self.versions:
-                if verbose:
-                    print(
-                        f"💾 Exporting versions summary to '{self.export_dir}' directory..."
-                    )
                 self._create_summary_md(self.export_dir)
 
         except KeyboardInterrupt:
-            print("\n❌ Generation interrupted by user. Gracefully finish if possible")
+            logging.info(
+                "\n❌ Generation interrupted by user. Gracefully finish if possible"
+            )
         except Exception as e:
-            print(f"❌ Error during generation: {e}. Gracefully finish if possible")
-            if verbose:
-                traceback.print_exc()
+            logging.error(
+                f"❌ Error during generation: {e}. Gracefully finish if possible"
+            )
+            traceback.print_exc()
 
         # Final scoring
         final_judgement = self.versions[-1].judgement
@@ -669,12 +482,13 @@ class LinkedInArticleGenerator(dspy.Module):
         both_targets_achieved = final_quality_achieved and final_length_achieved
 
         final_result = {
+            "writer_id": self.writer_id,
             "final_article": current_article,
             "final_score": final_judgement,
             "target_achieved": both_targets_achieved,
             "quality_achieved": final_quality_achieved,
             "length_achieved": final_length_achieved,
-            "iterations_used": self.iteration,
+            "iterations_used": self.version_id,
             "versions": self.versions,
             "generation_log": self.generation_log,
             "word_count": final_word_count,
@@ -687,7 +501,6 @@ class LinkedInArticleGenerator(dspy.Module):
         self,
         draft_or_outline: str,
         context: str,
-        verbose: bool,
         version_id: Optional[int] = None,
     ) -> Tuple[str, str]:
         """Generate initial markdown article from draft/outline using ArticleGenerationSignature.
@@ -696,28 +509,15 @@ class LinkedInArticleGenerator(dspy.Module):
             Tuple of (generated_article, context_used)
         """
 
-        # Always perform RAG search for comprehensive context
-        if verbose:
-            self.verbose_manager.print_generation_phase(
-                "Performing comprehensive RAG search"
-            )
-
-        context = context or self._perform_rag_search(
-            draft_or_outline, verbose, version_id
-        )
-
-        if verbose and context:
-            print(f"📚 Using context: {len(context)} characters")
+        if not context:
+            # Perform RAG search if no context provided
+            self.output_manager.print_version_rag_search()
+            context = self._perform_rag_search(draft_or_outline, version_id)
 
         # Prepare generation inputs
         scoring_criteria = self.criteria_extractor.get_criteria_for_generation()
 
         try:
-            # Print progress message for initial generation
-            if version_id is not None:
-                from main import print_version_generation
-
-                print_version_generation(version_id, "initial")
 
             # Validate context window before generation
             content_parts = {
@@ -729,17 +529,20 @@ class LinkedInArticleGenerator(dspy.Module):
             try:
                 self.context_manager.validate_content(content_parts)
             except ContextWindowError as e:
-                if verbose:
-                    print(f"⚠️ Context window validation failed: {e}")
+                logging.error(f"⚠️ Context window validation failed: {e}")
                 # Intelligently reduce context size instead of making it empty
                 context = self.context_manager.reduce_context_size(
-                    context, content_parts, verbose
+                    context,
+                    content_parts,
                 )
                 content_parts["context"] = context
                 # Validate again to ensure it now fits
                 self.context_manager.validate_content(content_parts)
 
+            self.output_manager.print_version_ctx_details(context)
+
             # Generate initial article with comprehensive RAG context
+            self.output_manager.print_version_generation()
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.generator(
                     original_draft=draft_or_outline,
@@ -750,14 +553,15 @@ class LinkedInArticleGenerator(dspy.Module):
             return result.generated_article, context
 
         except Exception as e:
-            if verbose:
-                print(f"⚠️ Initial generation failed, using draft as fallback: {e}")
+            logging.error(f"⚠️ Initial generation failed, using draft as fallback: {e}")
 
             # Fallback to original draft if generation fails
             return draft_or_outline, context or ""
 
     def _generate_improved_version_with_judgement(
-        self, current_article: str, judgement: JudgementModel, verbose: bool = False
+        self,
+        current_article: str,
+        judgement: JudgementModel,
     ) -> Tuple[str, str]:
         """Generate an improved version using the judge's improvement prompt.
 
@@ -766,25 +570,21 @@ class LinkedInArticleGenerator(dspy.Module):
         """
 
         # Determine context based on recreate_ctx flag
+        self.output_manager.print_version_context_reuse(self.recreate_ctx)
+
         if self.recreate_ctx:
             # Perform fresh RAG search for improvement context
-            context = self._perform_rag_search(current_article, verbose=verbose)
-            if verbose:
-                self.verbose_manager.print_context_reuse(len(context), True)
+            context = self._perform_rag_search(current_article)
         else:
             # Reuse context from the first version
             if self.versions and len(self.versions) > 0:
                 context = self.versions[0].context
-                if verbose:
-                    self.verbose_manager.print_context_reuse(len(context), False)
             else:
                 # Fallback if no versions exist yet
-                if verbose:
-                    print("⚠️ No initial context available, performing fresh search...")
-                context = self._perform_rag_search(current_article, verbose=verbose)
-
-        if verbose and context:
-            print(f"📚 Using context: {len(context)} characters")
+                self.output_manager.print_version_message(
+                    "No initial context available, performing fresh search...", "⚠️"
+                )
+                context = self._perform_rag_search(current_article)
 
         try:
             # Validate context window before improvement
@@ -798,31 +598,26 @@ class LinkedInArticleGenerator(dspy.Module):
             try:
                 self.context_manager.validate_content(content_parts)
             except ContextWindowError as e:
-                if verbose:
-                    print(f"⚠️ Context window validation failed for improvement: {e}")
+                logging.error(
+                    f"⚠️ Context window validation failed for improvement: {e}"
+                )
                 # Intelligently reduce context size instead of making it empty
                 context = self.context_manager.reduce_context_size(
-                    context, content_parts, verbose
+                    context, content_parts
                 )
                 content_parts["context"] = context
                 # Validate again to ensure it now fits
                 self.context_manager.validate_content(content_parts)
 
-            # Print progress message for improvement generation
-            if (
-                hasattr(self, "_current_version_id")
-                and self._current_version_id is not None
-            ):
-                from main import print_version_generation
-
-                print_version_generation(
-                    self._current_version_id, f"iteration {self.iteration}"
-                )
+            self.output_manager.print_version_generation()
 
             # Generate improved article using judge's improvement prompt
             with dspy.context(lm=self.models["generator"].dspy_lm):
                 result = self.improver(
                     current_article=current_article,
+                    current_word_count=judgement.word_count,
+                    target_word_count_min=self.word_count_manager.target_min,
+                    target_word_count_max=self.word_count_manager.target_max,
                     original_draft=self._get_original_draft(),
                     context=context,
                     score_feedback=judgement.improvement_prompt,
@@ -831,10 +626,9 @@ class LinkedInArticleGenerator(dspy.Module):
             return result.improved_article, context
 
         except Exception as e:
-            if verbose:
-                print(
-                    f"⚠️ Improvement generation failed, returning current article: {e}"
-                )
+            logging.error(
+                f"⚠️ Improvement generation failed, returning current article: {e}"
+            )
             return current_article, context or ""
 
     def _get_original_draft(self) -> str:
@@ -857,69 +651,131 @@ class LinkedInArticleGenerator(dspy.Module):
             print(f"\n[... {len(article_content) - 500} more characters ...]")
         print("=" * 60)
 
-    def _print_judging_results_after_judging(self, version: "ArticleVersion"):
-        """Print comprehensive judging results after evaluation."""
-        judgement = version.judgement
-        print(f"\n🎯 JUDGING RESULTS FOR VERSION {version.version}")
-        print("=" * 60)
-        print("📊 SCORES:")
-        print(f"  • Total Score: {judgement.total_score}/{judgement.max_score}")
-        print(f"  • Percentage: {judgement.percentage:.1f}%")
-        print(f"  • Performance Tier: {judgement.performance_tier}")
-        print(f"  • Word Count: {judgement.word_count} words")
-        print(
-            f"  • Meets Requirements: {'✅ YES' if judgement.meets_requirements else '❌ NO'}"
-        )
-
-        if judgement.overall_feedback:
-            print("\n💬 OVERALL FEEDBACK:")
-            print(f"  {judgement.overall_feedback}")
-
-        if judgement.improvement_prompt:
-            print("\n🔧 IMPROVEMENT PROMPT:")
-            print(f"  {judgement.improvement_prompt}")
-
-        print("=" * 60)
-
     def _get_user_decision(self, version: "ArticleVersion") -> str:
         """Ask user whether to continue improving or finish using contextual dashboard."""
         judgement = version.judgement
 
-        # Generate progress dashboard
-        dashboard = self.dashboard.generate_progress_dashboard(
-            current_score=judgement.percentage,
-            target_score=self.target_score_percentage,
-            word_count=judgement.word_count,
-            target_range=(
-                self.word_count_manager.target_min,
-                self.word_count_manager.target_max,
-            ),
-            overall_feedback=judgement.overall_feedback,
+        # Display article status
+        print(
+            f"\nYour article score is {judgement.percentage:.1f}% with length {judgement.word_count} words."
         )
-        print(dashboard)
+        print("")
 
-        prompt = self.interaction_manager.get_contextual_decision_prompt(
-            current_score=judgement.percentage,
-            improvement_prompt=judgement.improvement_prompt,
-        )
-        print(prompt)
+        # Display menu options in consistent format
+        print("Choose your next action:")
+        print("  1. ✅ Proceed with these improvements")
+        print("  2. ✏️  Add specific instructions for this iteration")
+        print("  3. 💾 Export this version to directory")
+        print("  4. 🔍 Fact-check current version")
+        print("  5. 🏁 Finish with current version")
 
         while True:
             try:
-                choice = input("Enter your choice (1, 2, 3, or 4): ").strip().lower()
+                choice = (
+                    input("\nEnter your choice (1, 2, 3, 4, or 5): ").strip().lower()
+                )
                 if choice in ["1", "proceed", "p"]:
                     return "continue"
                 elif choice in ["2", "add", "a", "instructions", "i"]:
                     return "instructions"
                 elif choice in ["3", "export", "e"]:
                     return "export"
-                elif choice in ["4", "finish", "f"]:
+                elif choice in ["4", "fact", "fc", "fact-check"]:
+                    return "fact_check"
+                elif choice in ["5", "finish", "f"]:
                     return "finish"
                 else:
-                    print("Please enter '1', '2', '3', or '4'")
+                    print("Please enter '1', '2', '3', '4', or '5'")
             except KeyboardInterrupt:
                 print("\nOperation cancelled by user.")
                 return "finish"
+
+    def _perform_fact_check_on_version(self, version: "ArticleVersion"):
+        """
+        Perform fact-checking on a version and export results.
+
+        Args:
+            version: The ArticleVersion to fact-check
+        """
+        print("\n📋 FACT-CHECKING VERSION {}\n".format(version.version_id))
+        print("=" * 60)
+
+        # Output current article
+        print(f"\n📄 Current Article (Version {version.version_id}):")
+        print(f"Word Count: {version.judgement.word_count}")
+        print("-" * 60)
+
+        # Perform fact-checking
+        fact_checked_article, fact_check_result, changes_made = (
+            self.judge.perform_fact_check(version)
+        )
+
+        # Display results
+        print("\n📊 Fact-Check Results:")
+        print("-" * 60)
+        print(
+            f"Status: {'✅ Passed' if fact_check_result.fact_check_passed else '⚠️ Changes Made'}"
+        )
+        print(f"Changes: {len(changes_made)}")
+        print(f"Summary: {fact_check_result.summary_feedback}")
+
+        # Export fact-checked version if export_dir is set
+        if self.export_dir:
+            # Export fact-checked article
+            fc_filename = f"version-{version.version_id}-fc.md"
+            fc_filepath = os.path.join(self.export_dir, fc_filename)
+
+            try:
+                with open(fc_filepath, "w", encoding="utf-8") as f:
+                    # Add metadata header
+                    f.write(
+                        f"# Article Version {version.version_id} - Fact-Checked\n\n"
+                    )
+                    f.write(f"**Original Version:** {version.version_id}\n")
+                    f.write(
+                        f"**Fact-Check Status:** {'Passed' if fact_check_result.fact_check_passed else 'Changes Applied'}\n"
+                    )
+                    f.write(f"**Changes Made:** {len(changes_made)}\n")
+                    f.write(f"**Generated:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write("\n---\n\n")
+                    # Write the fact-checked article
+                    f.write(fact_checked_article)
+
+                print(f"\n✅ Exported fact-checked article: {fc_filepath}")
+            except Exception as e:
+                print(f"❌ Failed to export fact-checked article: {e}")
+
+            # Export changes JSON
+            changes_filename = f"version-{version.version_id}-fc-changes.json"
+            changes_filepath = os.path.join(self.export_dir, changes_filename)
+
+            try:
+                changes_data = {
+                    "version": version.version_id,
+                    "fact_check_passed": fact_check_result.fact_check_passed,
+                    "summary": fact_check_result.summary_feedback,
+                    "changes": [
+                        {
+                            "original": change.original,
+                            "updated": change.updated,
+                            "reason": change.reason,
+                            "citation": change.citation,
+                        }
+                        for change in changes_made
+                    ],
+                }
+
+                with open(changes_filepath, "w", encoding="utf-8") as f:
+                    json.dump(changes_data, f, indent=2, ensure_ascii=False)
+
+                print(f"✅ Exported fact-check changes: {changes_filepath}")
+            except Exception as e:
+                print(f"❌ Failed to export fact-check changes: {e}")
+        else:
+            print("\n⚠️ No export directory set - fact-checked version not saved")
+            print("   Use --export_dir to automatically save fact-checked versions")
+
+        print("\n" + "=" * 60)
 
     def _get_user_instructions(self) -> str:
         """Ask user for new instructions to add to the improvement prompt."""
@@ -977,8 +833,8 @@ class LinkedInArticleGenerator(dspy.Module):
         }
 
     def _print_final_summary(self, final_result: Dict[str, Any]):
-        """Print a comprehensive final summary using VerboseManager."""
-        self.verbose_manager.print_final_summary(final_result)
+        """Print a comprehensive final summary using OutputManager."""
+        self.output_manager.print_final_summary(final_result, self)
 
     def get_version_history(self) -> List[Dict[str, Any]]:
         """Get a summary of all article versions."""
@@ -986,7 +842,7 @@ class LinkedInArticleGenerator(dspy.Module):
 
         for version in self.versions:
             version_info = {
-                "version": version.version,
+                "version": version.version_id,
                 "word_count": version.judgement.word_count,
                 "timestamp": version.timestamp,
                 "improvement_feedback": version.judgement.improvement_prompt,
@@ -1015,13 +871,13 @@ class LinkedInArticleGenerator(dspy.Module):
         # os.makedirs(directory_name, exist_ok=True)
 
         # Use version number for unique filename
-        filename = f"version-{version.version}.md"
+        filename = f"version-{version.version_id}.md"
         filepath = os.path.join(directory_name, filename)
 
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 # Add version metadata header
-                f.write(f"# Article Version {version.version}\n\n")
+                f.write(f"# Article Version {version.version_id}\n\n")
                 f.write(f"**Generated:** {version.timestamp}\n")
                 if version.judgement:
                     f.write(
@@ -1037,10 +893,10 @@ class LinkedInArticleGenerator(dspy.Module):
                 # Write the article content
                 f.write(version.content)
 
-            print(f"✅ Exported version {version.version} to {filepath}")
+            self.output_manager.print_version_exporting(filepath)
 
         except Exception as e:
-            print(f"❌ Failed to export version {version.version}: {e}")
+            print(f"❌ Failed to export version {version.version_id}: {e}")
 
     def _resolve_directory_name(self, base_name: str) -> str:
         """Resolve directory name with automatic numbering if conflicts exist.
@@ -1070,9 +926,6 @@ class LinkedInArticleGenerator(dspy.Module):
         Args:
             directory_name: Optional directory name. If None, prompts user interactively.
         """
-        print("\n💾 EXPORT ARTICLE VERSIONS")
-        print("-" * 40)
-
         if not self.versions:
             print("❌ No versions available to export")
             return
@@ -1108,52 +961,7 @@ class LinkedInArticleGenerator(dspy.Module):
         version = self.versions[-1]
         self._export_single_version(version, self.export_dir)
 
-        print(
-            f"\n🎉 Successfully exported version {version.version} to '{directory_name}' directory"
-        )
-        print("📂 Returning to main menu...")
-
         return
-
-        exported_count = 0
-        for version in self.versions:
-            filename = f"version-{version.version}.md"
-            filepath = os.path.join(final_dir_name, filename)
-
-            try:
-                with open(filepath, "w", encoding="utf-8") as f:
-                    # Add version metadata header
-                    f.write(f"# Article Version {version.version}\n\n")
-                    f.write(f"**Generated:** {version.timestamp}\n")
-                    if version.judgement:
-                        f.write(
-                            f"**Score:** {version.judgement.percentage:.1f}% ({version.judgement.total_score}/{version.judgement.max_score})\n"
-                        )
-                        f.write(f"**Word Count:** {version.judgement.word_count}\n")
-                        f.write(
-                            f"**Performance Tier:** {version.judgement.performance_tier}\n"
-                        )
-                        if version.judgement.overall_feedback:
-                            f.write(
-                                f"**Feedback:** {version.judgement.overall_feedback}\n"
-                            )
-                    f.write("\n---\n\n")
-                    # Write the article content
-                    f.write(version.content)
-
-                exported_count += 1
-                print(f"✅ Exported {filename}")
-
-            except Exception as e:
-                print(f"❌ Failed to export {filename}: {e}")
-
-        # Create summary.md file for version comparison
-        self._create_summary_md(final_dir_name)
-
-        print(
-            f"\n🎉 Successfully exported {exported_count} versions to '{final_dir_name}' directory"
-        )
-        print("📂 Returning to main menu...")
 
     def _create_summary_md(self, dir_name: str):
         """Create a summary.md file with version comparison table."""
@@ -1181,10 +989,10 @@ class LinkedInArticleGenerator(dspy.Module):
                 # Version comparison table
                 f.write("## Version Comparison Table\n\n")
                 f.write(
-                    "| Version | Score | Percentage | Word Count | Performance Tier | Meets Requirements |\n"
+                    "| Version | Score | Percentage | Word Count | Performance Tier | Meets Requirements | Fact-Checked |\n"
                 )
                 f.write(
-                    "|---------|-------|------------|------------|------------------|-------------------|\n"
+                    "|---------|-------|------------|------------|------------------|-------------------|-------------|\n"
                 )
 
                 for version in self.versions:
@@ -1193,12 +1001,17 @@ class LinkedInArticleGenerator(dspy.Module):
                         meets_req = (
                             "✅ Yes" if judgement.meets_requirements else "❌ No"
                         )
+                        # Check if fact-checked version exists
+                        fc_filename = f"version-{version.version_id}-fc.md"
+                        fc_path = os.path.join(dir_name, fc_filename)
+                        fact_checked = "✅ Yes" if os.path.exists(fc_path) else "❌ No"
+
                         f.write(
-                            f"| {version.version} | {judgement.total_score}/{judgement.max_score} | {judgement.percentage:.1f}% | {judgement.word_count} | {judgement.performance_tier} | {meets_req} |\n"
+                            f"| {version.version_id} | {judgement.total_score}/{judgement.max_score} | {judgement.percentage:.1f}% | {judgement.word_count} | {judgement.performance_tier} | {meets_req} | {fact_checked} |\n"
                         )
                     else:
                         f.write(
-                            f"| {version.version} | N/A | N/A | N/A | N/A | N/A |\n"
+                            f"| {version.version_id} | N/A | N/A | N/A | N/A | N/A | N/A |\n"
                         )
 
                 f.write("\n")
@@ -1214,7 +1027,7 @@ class LinkedInArticleGenerator(dspy.Module):
                             (judgement.percentage / 100) * max_score_width
                         )
                         f.write(
-                            f"Version {version.version}: {score_bar} ({judgement.percentage:.1f}%)\n"
+                            f"Version {version.version_id}: {score_bar} ({judgement.percentage:.1f}%)\n"
                         )
                 f.write("```\n\n")
 
@@ -1223,7 +1036,7 @@ class LinkedInArticleGenerator(dspy.Module):
                 for version in self.versions:
                     judgement = version.judgement
                     if judgement:
-                        f.write(f"### Version {version.version}\n\n")
+                        f.write(f"### Version {version.version_id}\n\n")
                         f.write(
                             f"- **Score:** {judgement.total_score}/{judgement.max_score} ({judgement.percentage:.1f}%)\n"
                         )
@@ -1244,7 +1057,7 @@ class LinkedInArticleGenerator(dspy.Module):
                                 f"- **Overall Feedback:** {judgement.overall_feedback}\n"
                             )
 
-                        if judgement.improvement_prompt and version.version < len(
+                        if judgement.improvement_prompt and version.version_id < len(
                             self.versions
                         ):
                             f.write(

@@ -88,6 +88,7 @@ class ProgressDashboard:
     def generate_iteration_preview(
         self,
         current_score: float,
+        word_count: int,
     ) -> str:
         """
         Generate preview of what the next iteration will improve.
@@ -104,7 +105,7 @@ class ProgressDashboard:
         preview_parts = []
 
         preview_parts.append(
-            f"Your article is {current_score:.1f}% complete. Next iteration will improve:"
+            f"Your article score is {current_score:.1f}% with length {word_count} words."
         )
         preview_parts.append("")
 
@@ -190,15 +191,14 @@ class UserInteractionManager:
         self.dashboard = dashboard
 
     def get_contextual_decision_prompt(
-        self, current_score: float, improvement_prompt: str
+        self, current_score: float, word_count: int
     ) -> str:
         """
         Generate a contextual decision prompt based on current state.
 
         Args:
             current_score: Current percentage score
-            improvement_prompt: Judge's improvement guidance
-            focus_areas: Key areas needing improvement
+            word_count: Length of current article
 
         Returns:
             Formatted decision prompt
@@ -206,7 +206,7 @@ class UserInteractionManager:
         # Predict improvement impact (simplified estimation)
 
         preview = self.dashboard.generate_iteration_preview(
-            current_score=current_score,
+            current_score=current_score, word_count=word_count
         )
 
         return preview

@@ -22,66 +22,20 @@ import time
 
 from linkedin_article_generator import LinkedInArticleGenerator
 from dspy_factory import get_openrouter_model, DspyModelConfig
-from li_article_judge import print_score_report
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from output_manager import OutputManager
+from attachments import Attachments
+from attachments.data import get_sample_path
 
 import mlflow
 
 # Default model constant for fallback
 DEFAULT_MODEL_NAME = "moonshotai/kimi-k2:free"
 
-
-def print_version_progress(version_id: int, message: str, emoji: str = "📝"):
-    """
-    Print a version-specific progress message that is always visible.
-
-    Args:
-        version_id: The version number (1, 2, 3, etc.)
-        message: The progress message
-        emoji: Optional emoji to display
-    """
-    print(f"[{emoji} VERSION {version_id}] {message}")
-
-
-def print_version_start(version_id: int):
-    """Print version start message."""
-    print_version_progress(version_id, "Starting generation process...", "🚀")
-
-
-def print_version_rag_search(version_id: int):
-    """Print version RAG search start message."""
-    print_version_progress(version_id, "Searching web for relevant context...", "🌐")
-
-
-def print_version_generation(version_id: int, phase: str = "initial"):
-    """Print version generation start message."""
-    if phase == "initial":
-        print_version_progress(version_id, "Creating initial article draft...", "✍️")
-    else:
-        print_version_progress(version_id, f"Improving article ({phase})...", "🔄")
-
-
-def print_version_judging(version_id: int):
-    """Print version judging start message."""
-    print_version_progress(version_id, "Evaluating article quality...", "🎯")
-
-
-def print_version_complete(
-    version_id: int, score: Optional[float] = None, success: bool = True
-):
-    """Print version completion message."""
-    if success and score is not None:
-        print_version_progress(version_id, f"Completed with score: {score:.1f}%", "✅")
-    elif success:
-        print_version_progress(version_id, "Completed successfully", "✅")
-    else:
-        print_version_progress(version_id, "Failed to generate", "❌")
-
-
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 mlflow.set_experiment(f"DSPy LinkedIn {current_time}")
-mlflow.dspy.autolog()  # Automatically log DSPy runs to MLflow
+mlflow.dspy.autolog()  # type: ignore # Automatically log DSPy runs to MLflow
 
 
 def read_file(filepath: str) -> str:
@@ -196,11 +150,13 @@ def create_parallel_generators(
 
         # Create generator instance
         generator = LinkedInArticleGenerator(
+            writer_id=i + 1,
             target_score_percentage=args.target_score,
             max_iterations=args.max_iterations,
             word_count_min=args.word_count_min,
             word_count_max=args.word_count_max,
             models=version_models,
+            verbose=args.verbose,
             recreate_ctx=args.recreate_ctx,
             auto=True,  # Force auto mode for parallel execution
             export_dir=args.export_dir,
@@ -237,8 +193,6 @@ def run_parallel_generation(
         def make_generate_call(gen, draft, version_num=version_num):
             def generate_call():
                 try:
-                    # Print version start message
-                    print_version_start(version_num)
 
                     start_time = time.time()
                     result = gen.generate_article(
@@ -249,7 +203,6 @@ def run_parallel_generation(
                     # Print version completion message
                     final_score = result.get("final_score")
                     score_value = final_score.percentage if final_score else None
-                    print_version_complete(version_num, score=score_value, success=True)
 
                     return {
                         "version": version_num,
@@ -261,8 +214,6 @@ def run_parallel_generation(
                         ),
                     }
                 except Exception as e:
-                    # Print version failure message
-                    print_version_complete(version_num, success=False)
                     return {
                         "version": version_num,
                         "success": False,
@@ -298,44 +249,9 @@ def display_version_comparison(results: List[Dict[str, Any]]) -> None:
     Args:
         results: List of generation results
     """
-    print("\n" + "=" * 100)
-    print("📊 VERSION COMPARISON")
-    print("=" * 100)
-
-    # Header
-    print("<10")
-    print("-" * 100)
-
-    successful_results = [r for r in results if r["success"]]
-
-    for result in results:
-        version = result["version"]
-        success = result["success"]
-
-        if success:
-            score = result["result"]["final_score"].percentage
-            word_count = result["result"]["word_count"]
-            gen_time = result["generation_time"]
-            temp = result["temperature"]
-            status = "✅ Success"
-        else:
-            score = word_count = gen_time = temp = "N/A"
-            status = f"❌ Failed: {result['error'][:50]}..."
-
-        print("<10")
-
-    print("=" * 100)
-
-    if successful_results:
-        print(f"\n🎯 {len(successful_results)} versions generated successfully")
-        print(
-            f"📈 Best score: {max(r['result']['final_score'].percentage for r in successful_results):.1f}%"
-        )
-        print(
-            f"⏱️  Fastest generation: {min(r['generation_time'] for r in successful_results):.1f}s"
-        )
-    else:
-        print("\n❌ All versions failed to generate")
+    # Use OutputManager for consistent formatting
+    output_manager = OutputManager(writer_id=1, version_id=1, verbose=True)
+    output_manager.display_version_comparison(results)
 
 
 def select_best_version(results: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -496,12 +412,12 @@ Target Scores:
     )
     parser.add_argument(
         "--judge-model",
-        default="deepseek/deepseek-r1-0528:free",
+        default="google/gemini-2.5-flash-lite",
         help="LLM model to use for article scoring components (default: %(default)s)",
     )
     parser.add_argument(
         "--rag-model",
-        default="deepseek/deepseek-r1-0528:free",
+        default="moonshotai/kimi-k2:free",
         help="LLM model to use for RAG retrieval components (default: %(default)s)",
     )
     parser.add_argument(
@@ -555,6 +471,9 @@ Target Scores:
         print("❌ Error: max-iterations must be at least 1")
         sys.exit(1)
 
+    # Print execution header with all command line settings
+    OutputManager.print_execution_header(args)
+
     try:
         # Resolve all models using cascading fallback logic
         if args.verbose:
@@ -604,7 +523,10 @@ Target Scores:
             if args.verbose:
                 print(f"📝 Using provided draft ({len(draft_text)} characters)")
         elif args.file:
-            draft_text = read_file(args.file)
+            file_path = get_sample_path(args.file)
+            draft_text = Attachments(file_path)
+            draft_text = draft_text.text
+
             if args.verbose:
                 print(f"📄 Loaded draft from: {args.file}")
                 print(f"📝 Draft length: {len(draft_text)} characters")
@@ -724,18 +646,20 @@ The future will likely be hybrid, combining the best of both worlds.
 
             # Initialize Article Generator with component-specific models
             generator = LinkedInArticleGenerator(
+                writer_id=1,
                 target_score_percentage=args.target_score,
                 max_iterations=args.max_iterations,
                 word_count_min=args.word_count_min,
                 word_count_max=args.word_count_max,
                 models=models,
+                verbose=args.verbose,
                 recreate_ctx=args.recreate_ctx,
                 auto=args.auto,
                 export_dir=args.export_dir,
             )
 
             # Generate article
-            result = generator.generate_article(draft_text, verbose=args.verbose)
+            result = generator.generate_article(draft_text)
 
         # Print detailed scoring report or dashboard based on verbose mode
         if args.verbose:
@@ -752,7 +676,13 @@ The future will likely be hybrid, combining the best of both worlds.
             )
             print(final_dashboard)
         else:
-            print_score_report(result["final_score"])
+            # Use OutputManager for score reporting with version header
+            output_manager = OutputManager(
+                writer_id=result["writer_id"],
+                version_id=result["iterations_used"],
+                verbose=args.verbose,
+            )
+            output_manager.print_score_report(result["final_score"])
 
         # Always handle final article output - either save to file or display
         if args.output:

@@ -26,7 +26,13 @@ import dspy
 from pydantic import BaseModel, Field, validator
 from attachments.dspy import Attachments
 from dspy_factory import DspyModelConfig
-from models import ArticleVersion, JudgementModel, ScoreResultModel, ArticleScoreModel
+from models import (
+    ArticleVersion,
+    JudgementModel,
+    ScoreResultModel,
+    ArticleScoreModel,
+    FactCheckResult,
+)
 import logging
 from word_count_manager import WordCountManager
 import random
@@ -659,7 +665,7 @@ class LinkedInArticleScorer(dspy.Module):
                     class FallbackResult:
                         def __init__(self):
                             self.output = CriterionScoringOutput(
-                                score=0,  # Default zero score
+                                score=1,  # Default zero score
                                 reasoning=f"Unable to analyze this criterion due to response format issues. Criterion: {criterion['question'][:100]}...",
                                 suggestions="Try scoring criterion again.",
                             )
@@ -813,6 +819,11 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         self.criteria_extractor = CriteriaExtractor(min_length, max_length)
         self.word_count_manager = WordCountManager(min_length, max_length)
 
+        # Initialize FactChecker for citation validation
+        from fc_oc_v2 import FactChecker
+
+        self.fact_checker = FactChecker(models)
+
     def compare_versions(
         self, article_versions: List[ArticleVersion]
     ) -> Optional[ArticleVersion]:
@@ -940,14 +951,20 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
 
         # Check if both targets are achieved
         quality_achieved = score_results.percentage >= self.passing_score_percentage
-        meets_requirements = quality_achieved and length_achieved
+        basic_requirements_met = quality_achieved and length_achieved
 
-        # Generate improvement analysis if needed
+        # Note: Fact-checking is now a separate user-controlled step
+        # It is no longer performed automatically in the judge
+        # Use perform_fact_check() method for manual fact-checking
+
+        # Final requirements check based only on quality and length
+        meets_requirements = basic_requirements_met
+
+        # Generate improvement analysis including fact-checking feedback
         improvement_analysis = self._analyze_improvement_needs(
             score_results, article_text, word_count
         )
         improvement_prompt = improvement_analysis["detailed_feedback"]
-        # focus_areas = improvement_analysis["focus_summary"]
 
         # Create the judgement model
         judgement = latest_version.judgement
@@ -959,6 +976,8 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         judgement.word_count = word_count
         judgement.meets_requirements = meets_requirements
         judgement.improvement_prompt = improvement_prompt
+        # Note: fact_check_result is now set separately via perform_fact_check() method
+
         # Append to overall feedback with scoring results
         judgement.overall_feedback = (
             (judgement.overall_feedback + "\n\n" + score_results.overall_feedback)
@@ -968,6 +987,52 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
 
         latest_version.judgement = judgement
         return dspy.Prediction(output=latest_version)
+
+    def perform_fact_check(
+        self, article_version: ArticleVersion
+    ) -> Tuple[str, Any, List]:
+        """
+        Perform fact-checking on an article version.
+
+        Args:
+            article_version: The ArticleVersion to fact-check
+
+        Returns:
+            Tuple of (fact_checked_article_text, fact_check_result, changes_made)
+        """
+        print("🔍 Performing fact-checking...")
+
+        try:
+            fact_check_prediction = self.fact_checker(
+                article_version.content, article_version.context
+            )
+            fact_check_output = fact_check_prediction.output
+
+            fact_checked_article = fact_check_output.revised_article
+            changes_made = fact_check_output.changes_made
+
+            if fact_check_output.fact_check_passed:
+                print("✅ Fact-checking passed - all citations verified!")
+            else:
+                print(f"🔧 Applied {len(changes_made)} fact-checking corrections")
+
+            return fact_checked_article, fact_check_output, changes_made
+
+        except Exception as e:
+            logging.error(f"Fact-checking failed: {e}")
+            print(f"⚠️ Fact-checking failed: {e}")
+
+            # Return original article with error information
+            from fc_oc_v2 import FactCheckOutput
+
+            error_output = FactCheckOutput(
+                revised_article=article_version.content,
+                fact_check_passed=False,
+                summary_feedback=f"Fact-checking failed: {str(e)}",
+                changes_made=[],
+            )
+
+            return article_version.content, error_output, []
 
     def _analyze_improvement_needs(
         self, score_results: ArticleScoreModel, current_article: str, word_count: int
@@ -1033,29 +1098,6 @@ class ComprehensiveLinkedInArticleJudge(dspy.Module):
         feedback_parts.append(
             f"Score: {score_results.total_score}/{self.criteria_extractor.get_total_possible_score()} ({score_results.percentage:.1f}%)"
         )
-        feedback_parts.append("")
-
-        feedback_parts.append(
-            f"Current Article Length: {word_count} words | Needed Length: {self.min_length}-{self.max_length} words"
-        )
-        feedback_parts.append("")
-
-        if word_count < self.min_length:
-            words_needed = self.min_length - word_count
-            feedback_parts.append(
-                f"🔍 As the top priority, expand the article length by at least {words_needed} words.\n"
-            )
-            feedback_parts.append(
-                f"Use a maximum of 5 of the suggestions listed in detailed improvement feedback to lengthen the article with quality:"
-            )
-
-        elif word_count > self.max_length:
-            words_to_cut = word_count - self.max_length
-            feedback_parts.append(
-                f"✂️ As the top priority, reduce the article length by at least {words_to_cut} words)"
-            )
-            feedback_parts.append(f"Do not reduce the quality of content.")
-
         feedback_parts.append("")
 
         # Detailed category-specific feedback prioritized by scoring gaps
@@ -1316,9 +1358,6 @@ class FastLinkedInArticleScorer(dspy.Module):
         Returns:
             dspy.Prediction object containing ArticleScoreModel as output field
         """
-        print(
-            "🚀 Fast scoring: Analyzing article with single comprehensive evaluation..."
-        )
 
         # Prepare criteria JSON for the LLM
         criteria_json = self._prepare_criteria_json()
@@ -1355,76 +1394,6 @@ class FastLinkedInArticleScorer(dspy.Module):
 # ==========================================================================
 # SECTION 5: SCORING AND REPORTING FUNCTIONS
 # ==========================================================================
-
-
-def print_score_report(score) -> None:
-    """
-    Print a formatted report of the article scoring results.
-
-    Args:
-        score: The scoring model object (JudgementModel or ArticleScoreModel)
-    """
-    print("\n" + "=" * 80)
-    print("📋 LINKEDIN ARTICLE QUALITY SCORE REPORT")
-    print("=" * 80)
-    print(
-        f"🎯 Overall Score: {score.total_score}/{score.max_score} ({score.percentage:.1f}%)"
-    )
-    print(f"🏆 Performance Tier: {score.performance_tier}")
-
-    # Display word count if available
-    if hasattr(score, "word_count") and score.word_count is not None:
-        print(f"📝 Word Count: {score.word_count} words")
-    print()
-
-    # Check if this is the old ArticleScoreModel with category_scores
-    if hasattr(score, "category_scores"):
-        print("📊 CATEGORY BREAKDOWN:")
-        print("-" * 40)
-        for category, results in score.category_scores.items():
-            category_score = sum(r.score for r in results)
-            # Calculate category max based on actual point values
-            category_max = sum(
-                SCORING_CRITERIA[category][i].get("points", 5)
-                for i in range(len(results))
-            )
-            print(f"📁 {category}: {category_score}/{category_max}")
-
-            for i, result in enumerate(results):
-                criterion_points = SCORING_CRITERIA[category][i].get("points", 5)
-                print(f"  • {result.criterion}")
-                print(f"    Score: {result.score}/{criterion_points}")
-                print(f"    Reasoning: {result.reasoning}")
-                if result.suggestions:
-                    print(f"    💡 Suggestions: {result.suggestions}")
-                print()
-    else:
-        # For simplified JudgementModel, show basic category breakdown
-        print("📊 CATEGORY SUMMARY:")
-        print("-" * 40)
-        total_possible = 180  # Known total from criteria
-        for category_name, criteria in SCORING_CRITERIA.items():
-            category_max = sum(c.get("points", 5) for c in criteria)
-            # Estimate category score proportionally
-            estimated_score = int((score.total_score / total_possible) * category_max)
-            print(f"📁 {category_name}: ~{estimated_score}/{category_max}")
-        print()
-
-    # Display overall feedback if available
-    if hasattr(score, "overall_feedback") and score.overall_feedback:
-        print("💬 OVERALL FEEDBACK:")
-        print("-" * 40)
-        print(score.overall_feedback)
-        print()
-
-    # Display improvement guidance if available (JudgementModel specific)
-    if hasattr(score, "improvement_prompt") and score.improvement_prompt:
-        print("🔍 REMAINING ISSUES:")
-        print("-" * 40)
-        print(score.improvement_prompt)
-        print()
-
-    print("=" * 80)
 
 
 class CriteriaExtractor:

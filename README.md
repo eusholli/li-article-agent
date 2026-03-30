@@ -655,6 +655,72 @@ for draft_file in draft_files:
     generator.export_results(results_file)
 ```
 
+## REST API
+
+The generator is also available as a REST API with Server-Sent Events (SSE) streaming, suitable for integration with web applications.
+
+The API always runs in automatic mode (no user interaction), generates a single version, and fact-checks the article before returning. Progress is streamed in real time via SSE.
+
+### API Documentation
+
+Full endpoint reference, TypeScript interfaces, browser client code, and a React hook are in **[API.md](API.md)**.
+
+### Running the API locally
+
+```bash
+source venv/bin/activate
+uvicorn api:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
+Test with the included client:
+
+```bash
+python test_api.py                         # default settings
+python test_api.py --score 75 --min-words 600 --max-words 900  # fast test
+```
+
+### Production Deployment (Docker + Traefik)
+
+The API ships with Docker Compose files and a Traefik integration for HTTPS production deployments.
+
+#### Required environment variables
+
+Create a `.env` file (see `.env.example`):
+
+```
+# Domain Traefik will route to this service
+DOMAIN=li-agent.yourdomain.com
+
+# OpenRouter API key — used for all LLM calls
+OPENROUTER_API_KEY=sk-or-v1-...
+
+# Tavily API key — used for web search / RAG context
+TAVILY_API_KEY=tvly-dev-...
+```
+
+#### Deploy
+
+```bash
+# Copy files to server and run:
+./deploy-prod.sh
+```
+
+This runs `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
+
+#### Prerequisites on the host
+
+- Docker with the `webproxy` external network already created
+- Traefik running on that network with a `myresolver` Let's Encrypt cert resolver and a `websecure` HTTPS entrypoint
+- A DNS A record pointing `DOMAIN` to the host
+
+#### Notes
+
+- Use `--workers 1` — the model cache and ThreadPoolExecutor are process-local; multi-worker deployments need a shared cache (e.g., Redis)
+- Traefik `responseForwarding.flushInterval=1ms` is set in `docker-compose.prod.yml` — required for real-time SSE delivery
+- The API exposes CORS `allow_origins=["*"]`, so it can be called directly from any browser origin without proxying through a backend
+
+---
+
 ## Support
 
 ### Getting Help

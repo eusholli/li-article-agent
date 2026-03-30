@@ -70,8 +70,16 @@ class CriterionScoringOutput(BaseModel):
         description="Detailed explanation of why this score was given",
     )
     suggestions: str = Field(
-        ..., min_length=10, description="Specific suggestions for improvement"
+        ...,
+        min_length=10,
+        description="Specific suggestions for improvement. If the criterion is well-executed, write 'No improvements needed - this criterion is well executed.' Do NOT write 'None'.",
     )
+
+    @validator("suggestions")
+    def suggestions_not_none(cls, v):
+        if not v or v.strip().lower() in ("none", "none.", "n/a", "na", "-") or len(v.strip()) < 10:
+            return "No improvements needed - this criterion is well executed."
+        return v
 
 
 class OverallFeedbackOutput(BaseModel):
@@ -134,8 +142,16 @@ class CriterionScore(BaseModel):
         ..., min_length=10, description="Detailed explanation of the score"
     )
     suggestions: str = Field(
-        ..., min_length=10, description="Specific improvement suggestions"
+        ...,
+        min_length=10,
+        description="Specific improvement suggestions. If the criterion is well-executed, write 'No improvements needed - this criterion is well executed.' Do NOT write 'None'.",
     )
+
+    @validator("suggestions")
+    def suggestions_not_none(cls, v):
+        if not v or v.strip().lower() in ("none", "none.", "n/a", "na", "-") or len(v.strip()) < 10:
+            return "No improvements needed - this criterion is well executed."
+        return v
 
 
 class CategorySummary(BaseModel):

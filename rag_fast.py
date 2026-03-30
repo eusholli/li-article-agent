@@ -532,9 +532,10 @@ async def retrieve_and_pack(
         max_rag_tokens = 100000
 
     topic_extractor = dspy.ChainOfThought(TopicExtractionSignature)
+    output_manager.print_version_message("Analyzing draft to identify research topics...")
 
     # Use generator LLM because temperature is not zero
-    with dspy.context(models=models["generator"].dspy_lm):
+    with dspy.context(lm=models["generator"].dspy_lm):
         topic_results = topic_extractor(draft_or_outline=draft_article).output
 
     if topic_results.needs_research:

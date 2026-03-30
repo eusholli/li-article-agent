@@ -129,5 +129,19 @@ class TestGeneratorHumanizerIntegration(unittest.TestCase):
         self.assertEqual(result["original_article"], result["humanized_article"])
 
 
+from api_models import GenerateRequest
+
+
+class TestGenerateRequestHumanizerModel(unittest.TestCase):
+
+    def test_humanizer_model_defaults_to_none(self):
+        req = GenerateRequest(draft="A" * 50)
+        self.assertIsNone(req.humanizer_model)
+
+    def test_humanizer_model_accepts_string(self):
+        req = GenerateRequest(draft="A" * 50, humanizer_model="gemini/gemini-2.5-pro")
+        self.assertEqual(req.humanizer_model, "gemini/gemini-2.5-pro")
+
+
 if __name__ == "__main__":
     unittest.main()

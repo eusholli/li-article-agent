@@ -62,14 +62,23 @@ humanizer_model: Optional[DspyModelConfig] = None
 **`generate_article_with_context()`** — at the end, before `return final_result`:
 ```python
 self.output_manager.print_humanizing_start()
-humanizer_lm = (self.humanizer_model or self.generator_model).dspy_lm
-with dspy.context(lm=humanizer_lm):
-    humanizer = HumanizerModule()
-    final_result["final_article"] = humanizer(final_result["final_article"])
+original_article = final_result["final_article"]
+try:
+    humanizer_lm = (self.humanizer_model or self.generator_model).dspy_lm
+    with dspy.context(lm=humanizer_lm):
+        humanizer = HumanizerModule()
+        humanized_article = humanizer(original_article)
+except Exception as e:
+    logging.error(f"Humanization failed: {e}")
+    humanized_article = original_article
+final_result["original_article"] = original_article
+final_result["humanized_article"] = humanized_article
 self.output_manager.print_humanizing_complete()
 ```
 
 `final_result["final_score"]` is left unchanged — reflects pre-humanization quality.
+
+Both `original_article` and `humanized_article` are always present in the result dict. If humanization fails, `humanized_article` equals `original_article`.
 
 ---
 
@@ -106,7 +115,7 @@ def print_humanizing_complete(self):
     self._emit("humanized", "Humanization complete")
 ```
 
-**`_run_generation()`** — resolve humanizer model:
+**`_run_generation()`** — resolve humanizer model and update `complete` event payload:
 ```python
 humanizer_cfg = resolve_model_cached(
     req.humanizer_model or req.generator_model or default, default, temp=0.7
@@ -114,7 +123,25 @@ humanizer_cfg = resolve_model_cached(
 models = {"generator": gen_cfg, "judge": judge_cfg, "rag": rag_cfg, "humanizer": humanizer_cfg}
 ```
 
+The `complete` SSE event payload changes from `final_article: string` to a nested `article` object:
+```json
+{
+  "type": "complete",
+  "article": {
+    "original": "# Article Title\n\nPre-humanization markdown...",
+    "humanized": "# Article Title\n\nPost-humanization markdown..."
+  },
+  "score": { ... },
+  "target_achieved": true,
+  "iterations_used": 3
+}
+```
+
+`score` reflects the pre-humanization quality evaluation and is unchanged.
+
 Temperature `0.7` for the humanizer — higher than judge (0.0) to encourage natural variation, lower than max to stay coherent.
+
+**Error handling:** If humanization fails, `article.humanized` equals `article.original`. The `complete` event is always emitted — never an `error` event — due to humanization failure alone.
 
 ---
 
@@ -127,8 +154,9 @@ Draft
   → Fact-checking [existing trusted final step]
   → Humanization [new trusted final step]
       Pass 1: Remove 25 AI patterns + apply brand voice → humanized_draft
-      Pass 2: Self-critique remaining tells → final_article
-  → Return final_article to user
+      Pass 2: Self-critique remaining tells → humanized_article
+  → Return { original_article, humanized_article, score, ... } to caller
+  → API emits complete event: { article: { original, humanized }, score, ... }
 ```
 
 ## Files Changed
@@ -143,7 +171,9 @@ Draft
 
 ## Success Criteria
 
-- AI text detection score <25% on the final returned article
+- AI text detection score <25% on `humanized_article`
 - 180-point quality score unchanged (no re-scoring after humanization)
+- Both `original_article` and `humanized_article` always present in API response
+- Humanization failure degrades gracefully: `humanized_article` equals `original_article`, no error event
 - Humanization adds ~2 LLM calls (~30-60s) latency to the pipeline
 - Symphony brand voice constraints (forbidden words, sentence rhythm, PAS/AIDA) are applied

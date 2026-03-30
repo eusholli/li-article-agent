@@ -7,7 +7,7 @@ The client receives real-time progress events and a final result event when done
 Event types emitted on the SSE stream:
   {"type": "progress", "stage": "<stage>", "message": "<text>"}
   {"type": "heartbeat"}
-  {"type": "complete", "final_article": "...", "score": {...}, "target_achieved": bool, "iterations_used": int}
+  {"type": "complete", "article": {"original": "...", "humanized": "..."}, "score": {...}, "target_achieved": bool, "iterations_used": int}
   {"type": "error", "message": "<text>"}
 
 Usage:
@@ -347,8 +347,8 @@ async def generate_article(req: GenerateRequest):
 
     - `progress` — intermediate status update with `stage` and `message`
     - `heartbeat` — keep-alive ping (no payload)
-    - `complete` — generation finished; contains `final_article`, `score`,
-      `target_achieved`, and `iterations_used`
+    - `complete` — generation finished; contains `article` (with `original` and
+      `humanized` keys), `score`, `target_achieved`, and `iterations_used`
     - `error` — generation failed; contains `message`
 
     The stream ends after the `complete` or `error` event.

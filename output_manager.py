@@ -159,6 +159,21 @@ class OutputManager:
             message = self._format_version_message("Failed to generate", "❌")
         print(message)
 
+    def print_iteration_start(self, iteration_n: int, max_iterations: int) -> None:
+        """Print iteration start message."""
+        message = self._format_version_message(
+            f"Iteration {iteration_n} of {max_iterations}", "🔄"
+        )
+        print(message)
+
+    def print_job_complete(self, score: float, tier: str, word_count: int, target_achieved: bool) -> None:
+        """Print job completion summary message."""
+        status = "Target achieved" if target_achieved else "Best effort result"
+        message = self._format_version_message(
+            f"Generation complete — {score:.1f}% ({tier}), {word_count} words — {status}", "🏆"
+        )
+        print(message)
+
     # ============================================================================
     # VERBOSE MANAGER METHODS (from linkedin_article_generator.py)
     # ============================================================================
@@ -569,6 +584,20 @@ class OutputManager:
         base_message = "Fact-checking validation failed"
         full_message = f"{base_message}: {reason}" if reason else base_message
         message = self._format_version_message(full_message, "❌")
+        print(message)
+
+    def print_humanizing_start(self):
+        """Print humanization start message."""
+        message = self._format_version_message(
+            "Starting humanization rewrite...", "✍️"
+        )
+        print(message)
+
+    def print_humanizing_complete(self):
+        """Print humanization complete message."""
+        message = self._format_version_message(
+            "Humanization complete.", "✅"
+        )
         print(message)
 
     # ============================================================================

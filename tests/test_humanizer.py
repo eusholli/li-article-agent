@@ -48,5 +48,29 @@ class TestHumanizerModule(unittest.TestCase):
         h.critique.assert_called_once_with(humanized_draft=intermediate)
 
 
+from output_manager import OutputManager
+import io
+import sys
+
+
+class TestOutputManagerHumanizingMethods(unittest.TestCase):
+
+    def test_print_humanizing_start_prints_message(self):
+        om = OutputManager(writer_id=1, version_id=1, verbose=True)
+        captured = io.StringIO()
+        sys.stdout = captured
+        om.print_humanizing_start()
+        sys.stdout = sys.__stdout__
+        self.assertIn("humaniz", captured.getvalue().lower())
+
+    def test_print_humanizing_complete_prints_message(self):
+        om = OutputManager(writer_id=1, version_id=1, verbose=True)
+        captured = io.StringIO()
+        sys.stdout = captured
+        om.print_humanizing_complete()
+        sys.stdout = sys.__stdout__
+        self.assertIn("humaniz", captured.getvalue().lower())
+
+
 if __name__ == "__main__":
     unittest.main()

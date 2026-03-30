@@ -143,5 +143,28 @@ class TestGenerateRequestHumanizerModel(unittest.TestCase):
         self.assertEqual(req.humanizer_model, "gemini/gemini-2.5-pro")
 
 
+from api import QueueOutputManager
+import queue
+
+
+class TestQueueOutputManagerHumanizingEvents(unittest.TestCase):
+
+    def test_print_humanizing_start_emits_event(self):
+        q = queue.Queue()
+        om = QueueOutputManager(writer_id=1, progress_queue=q)
+        om.print_humanizing_start()
+        event = q.get_nowait()
+        self.assertEqual(event["type"], "progress")
+        self.assertEqual(event["stage"], "humanizing")
+
+    def test_print_humanizing_complete_emits_event(self):
+        q = queue.Queue()
+        om = QueueOutputManager(writer_id=1, progress_queue=q)
+        om.print_humanizing_complete()
+        event = q.get_nowait()
+        self.assertEqual(event["type"], "progress")
+        self.assertEqual(event["stage"], "humanized")
+
+
 if __name__ == "__main__":
     unittest.main()

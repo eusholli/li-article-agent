@@ -31,7 +31,7 @@ from attachments.data import get_sample_path
 import mlflow
 
 # Default model constant for fallback
-DEFAULT_MODEL_NAME = "moonshotai/kimi-k2:free"
+DEFAULT_MODEL_NAME = "moonshotai/kimi-k2-thinking"
 
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 mlflow.set_experiment(f"DSPy LinkedIn {current_time}")
@@ -340,7 +340,7 @@ Examples:
   # Component-specific model selection
   python main.py --generator-model "anthropic/claude-3-sonnet" \\
                  --judge-model "openai/gpt-4o" \\
-                 --rag-model "moonshotai/kimi-k2:free"
+                 --rag-model "moonshotai/kimi-k2-thinking"
 
 The system will:
 1. Generate an initial article from your draft/outline
@@ -349,7 +349,7 @@ The system will:
 4. Display progress and final results
 
 Model Selection:
-  --generator-model: Model for article generation (default: moonshotai/kimi-k2:free)
+  --generator-model: Model for article generation (default: moonshotai/kimi-k2-thinking)
   --judge-model: Model for article scoring (default: deepseek/deepseek-r1-0528:free)
   --rag-model: Model for web search/retrieval (default: deepseek/deepseek-r1-0528:free)
 
@@ -401,23 +401,23 @@ Target Scores:
     # Model and output options
     parser.add_argument(
         "--model",
-        default="moonshotai/kimi-k2:free",
+        default="moonshotai/kimi-k2-thinking",
         help="Default model to use if specialized models are not found (default: %(default)s)",
     )
     parser.add_argument(
         "--generator-model",
-        default="moonshotai/kimi-k2:free",
+        default="moonshotai/kimi-k2-thinking",
         # default="deepseek/deepseek-r1-0528:free",
         help="LLM model to use for article generation components (default: %(default)s)",
     )
     parser.add_argument(
         "--judge-model",
-        default="google/gemini-2.5-flash-lite",
+        default="google/gemini-3-flash-preview",
         help="LLM model to use for article scoring components (default: %(default)s)",
     )
     parser.add_argument(
         "--rag-model",
-        default="moonshotai/kimi-k2:free",
+        default="moonshotai/kimi-k2-thinking",
         help="LLM model to use for RAG retrieval components (default: %(default)s)",
     )
     parser.add_argument(

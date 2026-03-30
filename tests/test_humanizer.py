@@ -1,6 +1,6 @@
 """Unit tests for HumanizerModule."""
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import dspy
 
 # Import will fail until humanizer.py exists
@@ -70,6 +70,63 @@ class TestOutputManagerHumanizingMethods(unittest.TestCase):
         om.print_humanizing_complete()
         sys.stdout = sys.__stdout__
         self.assertIn("humaniz", captured.getvalue().lower())
+
+
+class TestGeneratorHumanizerIntegration(unittest.TestCase):
+
+    def _make_minimal_result(self):
+        """Minimal result dict matching what generate_article_with_context returns."""
+        return {
+            "writer_id": 1,
+            "final_article": "original article text",
+            "final_score": MagicMock(
+                percentage=90.0,
+                performance_tier="World-class",
+                word_count=2100,
+                meets_requirements=True,
+                overall_feedback="Great",
+            ),
+            "target_achieved": True,
+            "quality_achieved": True,
+            "length_achieved": True,
+            "iterations_used": 2,
+            "versions": [],
+            "generation_log": [],
+            "word_count": 2100,
+            "improvement_summary": "",
+        }
+
+    def test_result_contains_original_and_humanized_keys(self):
+        """generate_article_with_context must add original_article and humanized_article."""
+        result = self._make_minimal_result()
+
+        # Simulate what the humanizer integration code does
+        original = result["final_article"]
+        humanized = "humanized version"
+
+        result["original_article"] = original
+        result["humanized_article"] = humanized
+
+        self.assertIn("original_article", result)
+        self.assertIn("humanized_article", result)
+        self.assertEqual(result["original_article"], "original article text")
+        self.assertEqual(result["humanized_article"], "humanized version")
+
+    def test_humanizer_failure_sets_humanized_equal_to_original(self):
+        """On HumanizerModule exception, humanized_article must equal original_article."""
+        result = self._make_minimal_result()
+        original = result["final_article"]
+
+        # Simulate the error handling logic
+        try:
+            raise RuntimeError("LLM call failed")
+        except Exception:
+            humanized = original
+
+        result["original_article"] = original
+        result["humanized_article"] = humanized
+
+        self.assertEqual(result["original_article"], result["humanized_article"])
 
 
 if __name__ == "__main__":

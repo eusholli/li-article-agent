@@ -28,6 +28,7 @@ from context_window_manager import ContextWindowManager, ContextWindowError
 from rag_fast import retrieve_and_pack
 from progress_dashboard import ProgressDashboard, UserInteractionManager
 from output_manager import OutputManager
+from humanizer import HumanizerModule
 
 
 class ArticleGenerationSignature(dspy.Signature):
@@ -150,6 +151,7 @@ class LinkedInArticleGenerator(dspy.Module):
         recreate_ctx: bool = False,
         auto: bool = False,
         export_dir: Optional[str] = None,
+        output_manager: Optional["OutputManager"] = None,
     ):
         """
         Initialize the LinkedIn Article Generator.
@@ -172,7 +174,7 @@ class LinkedInArticleGenerator(dspy.Module):
         self.max_iterations = max_iterations
 
         # Initialize OutputManager for beautiful verbose output
-        self.output_manager = OutputManager(writer_id, version_id=1, verbose=True)
+        self.output_manager = output_manager or OutputManager(writer_id, version_id=1, verbose=True)
 
         # Initialize progress dashboard and user interaction manager
         self.dashboard = ProgressDashboard()
@@ -334,6 +336,8 @@ class LinkedInArticleGenerator(dspy.Module):
             # Ensure at least one iteration runs to get a judgement
             while self.version_id <= max(1, self.max_iterations):
 
+                self.output_manager.print_iteration_start(self.version_id, max(1, self.max_iterations))
+
                 word_count = self.word_count_manager.count_words(current_article)
 
                 # Create a pending judgement for the temporary version
@@ -421,8 +425,9 @@ class LinkedInArticleGenerator(dspy.Module):
                     if version.judgement.meets_requirements:
 
                         # Automatically perform fact-checking when targets are met
-                        print(
-                            "\n🎯 Quality and length targets achieved - performing automatic fact-checking..."
+                        self.output_manager.print_version_message(
+                            "Quality and length targets achieved — performing automatic fact-checking...",
+                            emoji="🎯",
                         )
                         self._perform_fact_check_on_version(version)
 
@@ -494,6 +499,21 @@ class LinkedInArticleGenerator(dspy.Module):
             "word_count": final_word_count,
             "improvement_summary": self._generate_improvement_summary(),
         }
+
+        # Humanization — final trusted post-processing step
+        self.output_manager.print_humanizing_start()
+        original_article = final_result["final_article"]
+        try:
+            humanizer_cfg = self.models.get("humanizer") or self.models["generator"]
+            with dspy.context(lm=humanizer_cfg.dspy_lm):
+                humanizer = HumanizerModule()
+                humanized_article = humanizer(article=original_article)
+        except Exception as e:
+            logging.error(f"Humanization failed: {e}")
+            humanized_article = original_article
+        final_result["original_article"] = original_article
+        final_result["humanized_article"] = humanized_article
+        self.output_manager.print_humanizing_complete()
 
         return final_result
 
@@ -697,27 +717,20 @@ class LinkedInArticleGenerator(dspy.Module):
         Args:
             version: The ArticleVersion to fact-check
         """
-        print("\n📋 FACT-CHECKING VERSION {}\n".format(version.version_id))
-        print("=" * 60)
-
-        # Output current article
-        print(f"\n📄 Current Article (Version {version.version_id}):")
-        print(f"Word Count: {version.judgement.word_count}")
-        print("-" * 60)
+        self.output_manager.print_fact_checking_start()
 
         # Perform fact-checking
         fact_checked_article, fact_check_result, changes_made = (
             self.judge.perform_fact_check(version)
         )
 
-        # Display results
-        print("\n📊 Fact-Check Results:")
-        print("-" * 60)
-        print(
-            f"Status: {'✅ Passed' if fact_check_result.fact_check_passed else '⚠️ Changes Made'}"
-        )
-        print(f"Changes: {len(changes_made)}")
-        print(f"Summary: {fact_check_result.summary_feedback}")
+        self.output_manager.print_fact_checking_results(fact_check_result)
+        if fact_check_result.fact_check_passed:
+            self.output_manager.print_fact_checking_passed()
+        else:
+            self.output_manager.print_fact_checking_failed(
+                fact_check_result.summary_feedback or ""
+            )
 
         # Export fact-checked version if export_dir is set
         if self.export_dir:

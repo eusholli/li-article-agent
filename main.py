@@ -504,6 +504,7 @@ Target Scores:
             "generator": resolved_generator,
             "judge": resolved_judge,
             "rag": resolved_rag,
+            "humanizer": resolved_generator,  # defaults to generator model
         }
 
         # Setup DSPy with the resolved generator model for thread-safe parallel execution

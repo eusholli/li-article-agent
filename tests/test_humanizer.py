@@ -1,10 +1,18 @@
-"""Unit tests for HumanizerModule."""
+"""Unit tests for HumanizerModule and related classes."""
+import io
+import os
+import queue
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
+
 import dspy
 
-# Import will fail until humanizer.py exists
-from humanizer import HumanizerModule
+from humanizer import (
+    HumanizerModule,
+    UndetectableDetectorApi,
+    UndetectableHumanizerApi,
+)
 
 
 class TestHumanizerModule(unittest.TestCase):
@@ -13,49 +21,97 @@ class TestHumanizerModule(unittest.TestCase):
         h = HumanizerModule()
         self.assertIsInstance(h, dspy.Module)
 
-    def test_forward_calls_rewrite_then_critique(self):
+    def test_forward_returns_dict_with_humanized_article(self):
         h = HumanizerModule()
 
         pass1_result = MagicMock()
         pass1_result.humanized_draft = "draft after pass 1"
 
-        pass2_result = MagicMock()
-        pass2_result.final_article = "final after pass 2"
+        pass3_result = MagicMock()
+        pass3_result.final_article = "final after pass 3"
 
         h.rewrite = MagicMock(return_value=pass1_result)
-        h.critique = MagicMock(return_value=pass2_result)
+        h.restore = MagicMock(return_value=pass3_result)
 
         result = h.forward(article="original AI text")
 
-        h.rewrite.assert_called_once_with(article="original AI text")
-        h.critique.assert_called_once_with(humanized_draft="draft after pass 1")
-        self.assertEqual(result, "final after pass 2")
+        self.assertIsInstance(result, dict)
+        self.assertIn("humanized_article", result)
+        self.assertEqual(result["humanized_article"], "final after pass 3")
 
-    def test_forward_passes_pass1_draft_to_pass2(self):
+    def test_forward_calls_rewrite_then_restore(self):
         h = HumanizerModule()
 
-        intermediate = "the intermediate draft"
-        pass1 = MagicMock()
-        pass1.humanized_draft = intermediate
+        pass1_result = MagicMock()
+        pass1_result.humanized_draft = "draft after pass 1"
 
-        pass2 = MagicMock()
-        pass2.final_article = "done"
+        pass3_result = MagicMock()
+        pass3_result.final_article = "final after pass 3"
 
-        h.rewrite = MagicMock(return_value=pass1)
-        h.critique = MagicMock(return_value=pass2)
+        h.rewrite = MagicMock(return_value=pass1_result)
+        h.restore = MagicMock(return_value=pass3_result)
 
-        h.forward(article="anything")
-        h.critique.assert_called_once_with(humanized_draft=intermediate)
+        h.forward(article="original AI text")
 
+        h.rewrite.assert_called_once_with(article="original AI text")
+        h.restore.assert_called_once_with(humanized_draft="draft after pass 1")
 
-from output_manager import OutputManager
-import io
-import sys
+    def test_forward_detection_none_when_no_api_key(self):
+        """When UNDETECTABLE_API_KEY is not set, detection should be None."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("UNDETECTABLE_API_KEY", None)
+            h = HumanizerModule()
+
+        self.assertIsNone(h.humanizer_api)
+        self.assertIsNone(h.detector_api)
+
+        pass1_result = MagicMock()
+        pass1_result.humanized_draft = "draft"
+        pass3_result = MagicMock()
+        pass3_result.final_article = "final"
+        h.rewrite = MagicMock(return_value=pass1_result)
+        h.restore = MagicMock(return_value=pass3_result)
+
+        result = h.forward(article="text")
+        self.assertIsNone(result["detection"])
+
+    def test_api_instances_created_when_key_set(self):
+        """When UNDETECTABLE_API_KEY is set, humanizer_api and detector_api are initialised."""
+        with patch.dict(os.environ, {"UNDETECTABLE_API_KEY": "test-key-123"}):
+            h = HumanizerModule()
+
+        self.assertIsInstance(h.humanizer_api, UndetectableHumanizerApi)
+        self.assertIsInstance(h.detector_api, UndetectableDetectorApi)
+
+    def test_api_failure_falls_back_to_branded_text(self):
+        """If the humanizer API raises, forward returns the Pass 1 output and no detection."""
+        with patch.dict(os.environ, {"UNDETECTABLE_API_KEY": "test-key-123"}):
+            h = HumanizerModule()
+
+        pass1_result = MagicMock()
+        pass1_result.humanized_draft = "branded draft"
+        pass3_result = MagicMock()
+        pass3_result.final_article = "final from branded"
+
+        h.rewrite = MagicMock(return_value=pass1_result)
+        h.restore = MagicMock(return_value=pass3_result)
+        h.humanizer_api = MagicMock()
+        h.humanizer_api.humanize.side_effect = TimeoutError("timed out")
+        h.detector_api = MagicMock()
+        h.detector_api.detect.side_effect = Exception("detection failed")
+
+        result = h.forward(article="original")
+
+        # Should not raise; should fall back gracefully
+        self.assertIn("humanized_article", result)
+        # restore was called with the branded draft (Pass 1 output) as fallback
+        h.restore.assert_called_once_with(humanized_draft="branded draft")
 
 
 class TestOutputManagerHumanizingMethods(unittest.TestCase):
 
     def test_print_humanizing_start_prints_message(self):
+        from output_manager import OutputManager
         om = OutputManager(writer_id=1, version_id=1, verbose=True)
         captured = io.StringIO()
         sys.stdout = captured
@@ -64,12 +120,33 @@ class TestOutputManagerHumanizingMethods(unittest.TestCase):
         self.assertIn("humaniz", captured.getvalue().lower())
 
     def test_print_humanizing_complete_prints_message(self):
+        from output_manager import OutputManager
         om = OutputManager(writer_id=1, version_id=1, verbose=True)
         captured = io.StringIO()
         sys.stdout = captured
         om.print_humanizing_complete()
         sys.stdout = sys.__stdout__
         self.assertIn("humaniz", captured.getvalue().lower())
+
+    def test_print_undetectable_submitted_prints_message(self):
+        from output_manager import OutputManager
+        om = OutputManager(writer_id=1, version_id=1, verbose=True)
+        captured = io.StringIO()
+        sys.stdout = captured
+        om.print_undetectable_submitted()
+        sys.stdout = sys.__stdout__
+        self.assertIn("undetectable", captured.getvalue().lower())
+
+    def test_print_detection_complete_prints_scores(self):
+        from output_manager import OutputManager
+        om = OutputManager(writer_id=1, version_id=1, verbose=True)
+        captured = io.StringIO()
+        sys.stdout = captured
+        om.print_detection_complete("humanized", ai_score=12.0, human_score=88.0)
+        sys.stdout = sys.__stdout__
+        output = captured.getvalue()
+        self.assertIn("88", output)
+        self.assertIn("12", output)
 
 
 class TestGeneratorHumanizerIntegration(unittest.TestCase):
@@ -96,19 +173,19 @@ class TestGeneratorHumanizerIntegration(unittest.TestCase):
             "improvement_summary": "",
         }
 
-    def test_result_contains_original_and_humanized_keys(self):
-        """generate_article_with_context must add original_article and humanized_article."""
+    def test_result_contains_original_humanized_and_detection_keys(self):
+        """generate_article_with_context must add original_article, humanized_article, detection_scores."""
         result = self._make_minimal_result()
-
-        # Simulate what the humanizer integration code does
         original = result["final_article"]
         humanized = "humanized version"
 
         result["original_article"] = original
         result["humanized_article"] = humanized
+        result["detection_scores"] = None
 
         self.assertIn("original_article", result)
         self.assertIn("humanized_article", result)
+        self.assertIn("detection_scores", result)
         self.assertEqual(result["original_article"], "original article text")
         self.assertEqual(result["humanized_article"], "humanized version")
 
@@ -117,16 +194,18 @@ class TestGeneratorHumanizerIntegration(unittest.TestCase):
         result = self._make_minimal_result()
         original = result["final_article"]
 
-        # Simulate the error handling logic
         try:
             raise RuntimeError("LLM call failed")
         except Exception:
             humanized = original
+            detection_scores = None
 
         result["original_article"] = original
         result["humanized_article"] = humanized
+        result["detection_scores"] = detection_scores
 
         self.assertEqual(result["original_article"], result["humanized_article"])
+        self.assertIsNone(result["detection_scores"])
 
 
 from api_models import GenerateRequest
@@ -144,7 +223,6 @@ class TestGenerateRequestHumanizerModel(unittest.TestCase):
 
 
 from api import QueueOutputManager
-import queue
 
 
 class TestQueueOutputManagerHumanizingEvents(unittest.TestCase):
@@ -164,6 +242,40 @@ class TestQueueOutputManagerHumanizingEvents(unittest.TestCase):
         event = q.get_nowait()
         self.assertEqual(event["type"], "progress")
         self.assertEqual(event["stage"], "humanized")
+
+    def test_print_undetectable_submitted_emits_event(self):
+        q = queue.Queue()
+        om = QueueOutputManager(writer_id=1, progress_queue=q)
+        om.print_undetectable_submitted()
+        event = q.get_nowait()
+        self.assertEqual(event["type"], "progress")
+        self.assertEqual(event["stage"], "humanizing_api")
+
+    def test_print_undetectable_progress_includes_elapsed(self):
+        q = queue.Queue()
+        om = QueueOutputManager(writer_id=1, progress_queue=q)
+        om.print_undetectable_progress(elapsed=30)
+        event = q.get_nowait()
+        self.assertEqual(event["type"], "progress")
+        self.assertIn("30", event["message"])
+
+    def test_print_detection_start_emits_event_with_which(self):
+        q = queue.Queue()
+        om = QueueOutputManager(writer_id=1, progress_queue=q)
+        om.print_detection_start("humanized")
+        event = q.get_nowait()
+        self.assertEqual(event["type"], "progress")
+        self.assertEqual(event["stage"], "detecting_humanized")
+
+    def test_print_detection_complete_emits_scores(self):
+        q = queue.Queue()
+        om = QueueOutputManager(writer_id=1, progress_queue=q)
+        om.print_detection_complete("original", ai_score=94.0, human_score=6.0)
+        event = q.get_nowait()
+        self.assertEqual(event["type"], "progress")
+        self.assertEqual(event["stage"], "detected_original")
+        self.assertIn("94", event["message"])
+        self.assertIn("6", event["message"])
 
 
 if __name__ == "__main__":

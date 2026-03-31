@@ -1,14 +1,24 @@
 """
-Humanizer — Two-pass AI-detection removal for LinkedIn articles.
+Humanizer — AI-detection removal for LinkedIn articles.
 
-Pass 1 (HumanizerRewriteSignature): Remove the 25 AI writing patterns and
-apply Rakuten Symphony brand voice.
+Three-pass pipeline:
+  Pass 1 (LLM ChainOfThought): Remove AI vocabulary patterns + apply Rakuten Symphony brand voice
+  Pass 2 (Undetectable.ai humanizer API): Statistical transformation for detector evasion
+  Pass 3 (LLM Predict, minimal): Restore brand voice constraints the API may have broken
 
-Pass 2 (HumanizerCritiqueSignature): Self-critique remaining AI tells, then
-produce the final rewrite.
+After humanization, runs AI detection on both original and humanized articles via the
+Undetectable.ai Detector API, returning per-detector scores for the client.
+
+Requires UNDETECTABLE_API_KEY in environment. If not set, Pass 2 and detection are
+skipped gracefully — Pass 1 + Pass 3 still run.
 """
 
+import logging
+import os
+import time
+
 import dspy
+import httpx
 
 
 class HumanizerRewriteSignature(dspy.Signature):
@@ -108,49 +118,220 @@ class HumanizerRewriteSignature(dspy.Signature):
     )
 
 
-class HumanizerCritiqueSignature(dspy.Signature):
-    """Review the article for remaining signs of AI-generated writing, then produce a final rewrite.
+class BrandVoiceRestorationSignature(dspy.Signature):
+    """Restore Rakuten Symphony brand voice constraints after humanization.
 
-    Step 1 — Ask yourself: "What makes the below so obviously AI generated?"
-    Answer briefly: list the remaining tells as bullet points (specific phrases,
-    patterns, structural habits, rhythm issues).
+    ONLY fix these specific violations if present. Change nothing else.
 
-    Step 2 — Rewrite to fix every tell identified in Step 1.
-    The final article must sound like a skilled human expert wrote it, not an AI assistant.
-    Preserve all factual content, citations, and core arguments.
+    FORBIDDEN WORDS — replace with plain alternatives:
+      delve, tapestry, landscape, unlock, leverage, game-changer, overarching,
+      paramount, "in conclusion", "it is important to note"
+
+    THREE ADJECTIVES — break any sequence of three or more consecutive adjectives.
+
+    If no violations are present, return the text EXACTLY as received.
+    No rephrasing. No restructuring. No improvements. Minimal diff only.
     """
 
     humanized_draft: str = dspy.InputField(
-        desc="The article after the initial humanization pass"
-    )
-    remaining_tells: str = dspy.OutputField(
-        desc="Brief bullet list of remaining AI tells found in the draft (e.g. '- Still uses pivotal', "
-             "'- Paragraph 3 has three-item list pattern')"
+        desc="Article after Undetectable.ai processing"
     )
     final_article: str = dspy.OutputField(
-        desc="The final rewritten article with all remaining AI tells eliminated. "
-             "Same length and structure as the input — do not summarise or shorten."
+        desc="Article with brand voice violations fixed. Minimal changes only — "
+             "return text unchanged if no violations found."
     )
+
+
+class UndetectableHumanizerApi:
+    """Submit text to Undetectable.ai humanizer and poll for the result."""
+
+    BASE_URL = "https://humanize.undetectable.ai"
+
+    def __init__(self, api_key: str):
+        self._headers = {"apikey": api_key}
+
+    def humanize(
+        self,
+        text: str,
+        progress_callback=None,
+        timeout_seconds: int = 300,
+    ) -> str:
+        """Humanize text. Polls every 10s. Calls progress_callback(elapsed=N) each poll."""
+        resp = httpx.post(
+            f"{self.BASE_URL}/submit",
+            headers=self._headers,
+            timeout=30.0,
+            json={
+                "content": text,
+                "readability": "University",
+                "purpose": "Article",
+                "strength": "More Human",
+                "model": "v11",
+            },
+        )
+        resp.raise_for_status()
+        doc_id = resp.json()["id"]
+
+        for i in range(timeout_seconds // 10):
+            time.sleep(10)
+            elapsed = (i + 1) * 10
+            if progress_callback:
+                progress_callback(elapsed=elapsed)
+            doc = httpx.post(
+                f"{self.BASE_URL}/document",
+                headers=self._headers,
+                json={"id": doc_id},
+                timeout=30.0,
+            ).json()
+            if doc.get("status") == "done":
+                return doc["output"]
+
+        raise TimeoutError(
+            f"Undetectable.ai humanizer timed out after {timeout_seconds}s for doc {doc_id}"
+        )
+
+
+class UndetectableDetectorApi:
+    """Submit text to Undetectable.ai detector and poll for per-detector scores."""
+
+    BASE_URL = "https://ai-detect.undetectable.ai"
+
+    def __init__(self, api_key: str):
+        self._key = api_key
+
+    def detect(
+        self,
+        text: str,
+        progress_callback=None,
+        timeout_seconds: int = 120,
+    ) -> dict:
+        """Detect AI content. Returns {"ai_score": float, "human_score": float, "per_detector": {...}}"""
+        resp = httpx.post(
+            f"{self.BASE_URL}/detect",
+            timeout=30.0,
+            json={"key": self._key, "text": text, "model": "xlm_ud_detector"},
+        )
+        resp.raise_for_status()
+        doc_id = resp.json()["id"]
+
+        for i in range(timeout_seconds // 10):
+            time.sleep(10)
+            elapsed = (i + 1) * 10
+            if progress_callback:
+                progress_callback(elapsed=elapsed)
+            doc = httpx.post(
+                f"{self.BASE_URL}/query",
+                timeout=30.0,
+                json={"id": doc_id},
+            ).json()
+            if doc.get("status") == "done":
+                details = doc.get("result_details", {})
+                return {
+                    "ai_score": doc.get("result", 0.0),
+                    "human_score": details.get("human", 0.0),
+                    "per_detector": {
+                        "gpt_zero": details.get("scoreGptZero", 0.0),
+                        "openai": details.get("scoreOpenAI", 0.0),
+                        "writer": details.get("scoreWriter", 0.0),
+                        "cross_plag": details.get("scoreCrossPlag", 0.0),
+                        "copy_leaks": details.get("scoreCopyLeaks", 0.0),
+                        "sapling": details.get("scoreSapling", 0.0),
+                        "content_at_scale": details.get("scoreContentAtScale", 0.0),
+                        "zero_gpt": details.get("scoreZeroGPT", 0.0),
+                    },
+                }
+
+        raise TimeoutError(
+            f"Undetectable.ai detector timed out after {timeout_seconds}s for doc {doc_id}"
+        )
 
 
 class HumanizerModule(dspy.Module):
-    """Two-pass humanizer: rewrite then self-critique."""
+    """Three-pass humanizer: LLM brand voice → Undetectable.ai API → LLM brand voice restoration.
 
-    def __init__(self):
+    Returns a dict:
+        {
+            "humanized_article": str,
+            "detection": {
+                "original": {"ai_score": float, "human_score": float, "per_detector": {...}},
+                "humanized": {"ai_score": float, "human_score": float, "per_detector": {...}},
+            } | None
+        }
+    detection is None when UNDETECTABLE_API_KEY is not set.
+    """
+
+    def __init__(self, output_manager=None):
         super().__init__()
         self.rewrite = dspy.ChainOfThought(HumanizerRewriteSignature)
-        self.critique = dspy.ChainOfThought(HumanizerCritiqueSignature)
+        self.restore = dspy.Predict(BrandVoiceRestorationSignature)
+        self.output_manager = output_manager
+        api_key = os.getenv("UNDETECTABLE_API_KEY")
+        self.humanizer_api = UndetectableHumanizerApi(api_key) if api_key else None
+        self.detector_api = UndetectableDetectorApi(api_key) if api_key else None
 
-    def forward(self, article: str) -> str:
+    def forward(self, article: str) -> dict:
         """
-        Humanize an article in two passes.
+        Humanize an article in three passes and optionally run AI detection.
 
         Args:
             article: The article text to humanize.
 
         Returns:
-            The humanized article text.
+            Dict with "humanized_article" (str) and "detection" (dict or None).
         """
+        # Pass 1: LLM — remove AI vocabulary + apply brand voice
         pass1 = self.rewrite(article=article)
-        pass2 = self.critique(humanized_draft=pass1.humanized_draft)
-        return pass2.final_article
+        branded = pass1.humanized_draft
+
+        # Pass 2: Undetectable.ai — statistical transformation
+        if self.humanizer_api:
+            if self.output_manager:
+                self.output_manager.print_undetectable_submitted()
+            try:
+                api_output = self.humanizer_api.humanize(
+                    branded,
+                    progress_callback=(
+                        self.output_manager.print_undetectable_progress
+                        if self.output_manager
+                        else None
+                    ),
+                )
+                if self.output_manager:
+                    self.output_manager.print_undetectable_complete()
+            except Exception as e:
+                logging.warning(f"Undetectable.ai humanizer skipped: {e}")
+                api_output = branded
+        else:
+            api_output = branded
+
+        # Pass 3: LLM — restore brand voice violations introduced by API
+        pass3 = self.restore(humanized_draft=api_output)
+        humanized = pass3.final_article
+
+        # Detection: original and humanized
+        detection = None
+        if self.detector_api:
+            detection = {}
+            for which, text in (("original", article), ("humanized", humanized)):
+                if self.output_manager:
+                    self.output_manager.print_detection_start(which)
+                try:
+                    detection[which] = self.detector_api.detect(
+                        text,
+                        progress_callback=(
+                            self.output_manager.print_detection_progress
+                            if self.output_manager
+                            else None
+                        ),
+                    )
+                    if self.output_manager:
+                        self.output_manager.print_detection_complete(
+                            which,
+                            detection[which]["ai_score"],
+                            detection[which]["human_score"],
+                        )
+                except Exception as e:
+                    logging.warning(f"Detection ({which}) skipped: {e}")
+                    detection[which] = None
+
+        return {"humanized_article": humanized, "detection": detection}

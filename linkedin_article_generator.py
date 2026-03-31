@@ -174,7 +174,9 @@ class LinkedInArticleGenerator(dspy.Module):
         self.max_iterations = max_iterations
 
         # Initialize OutputManager for beautiful verbose output
-        self.output_manager = output_manager or OutputManager(writer_id, version_id=1, verbose=True)
+        self.output_manager = output_manager or OutputManager(
+            writer_id, version_id=1, verbose=True
+        )
 
         # Initialize progress dashboard and user interaction manager
         self.dashboard = ProgressDashboard()
@@ -336,7 +338,9 @@ class LinkedInArticleGenerator(dspy.Module):
             # Ensure at least one iteration runs to get a judgement
             while self.version_id <= max(1, self.max_iterations):
 
-                self.output_manager.print_iteration_start(self.version_id, max(1, self.max_iterations))
+                self.output_manager.print_iteration_start(
+                    self.version_id, max(1, self.max_iterations)
+                )
 
                 word_count = self.word_count_manager.count_words(current_article)
 
@@ -506,13 +510,18 @@ class LinkedInArticleGenerator(dspy.Module):
         try:
             humanizer_cfg = self.models.get("humanizer") or self.models["generator"]
             with dspy.context(lm=humanizer_cfg.dspy_lm):
-                humanizer = HumanizerModule()
-                humanized_article = humanizer(article=original_article)
+                humanizer = HumanizerModule(output_manager=self.output_manager)
+                humanizer_result = humanizer(article=original_article)
+            humanized_article = humanizer_result["humanized_article"]
+            detection_scores = humanizer_result.get("detection")
         except Exception as e:
             logging.error(f"Humanization failed: {e}")
             humanized_article = original_article
+            detection_scores = None
+
         final_result["original_article"] = original_article
         final_result["humanized_article"] = humanized_article
+        final_result["detection_scores"] = detection_scores
         self.output_manager.print_humanizing_complete()
 
         return final_result

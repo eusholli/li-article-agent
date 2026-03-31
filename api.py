@@ -7,7 +7,7 @@ The client receives real-time progress events and a final result event when done
 Event types emitted on the SSE stream:
   {"type": "progress", "stage": "<stage>", "message": "<text>"}
   {"type": "heartbeat"}
-  {"type": "complete", "article": {"original": "...", "humanized": "..."}, "score": {...}, "target_achieved": bool, "iterations_used": int}
+  {"type": "complete", "article": {"original": "...", "humanized": "..."}, "score": {...}, "detection": {"original": {"ai_score": float, "human_score": float, "per_detector": {...}}, "humanized": {...}} | null, "target_achieved": bool, "iterations_used": int}
   {"type": "error", "message": "<text>"}
 
 Usage:
@@ -141,6 +141,27 @@ class QueueOutputManager(OutputManager):
 
     def print_humanizing_complete(self) -> None:
         self._emit("humanized", "Humanization complete")
+
+    def print_undetectable_submitted(self) -> None:
+        self._emit("humanizing_api", "Submitted to humanization service, processing...")
+
+    def print_undetectable_progress(self, elapsed: int) -> None:
+        self._emit("humanizing_api_progress", f"Humanizing... ({elapsed}s elapsed)")
+
+    def print_undetectable_complete(self) -> None:
+        self._emit("humanizing_api_done", "Humanization service complete")
+
+    def print_detection_start(self, which: str) -> None:
+        self._emit(f"detecting_{which}", f"Checking {which} article for AI detection score...")
+
+    def print_detection_progress(self, elapsed: int) -> None:
+        self._emit("detecting_progress", f"Detecting... ({elapsed}s elapsed)")
+
+    def print_detection_complete(self, which: str, ai_score: float, human_score: float) -> None:
+        self._emit(
+            f"detected_{which}",
+            f"Detection ({which}): {human_score:.0f}% human / {ai_score:.0f}% AI",
+        )
 
     def print_citation_issues(self, invalid_citations: int, uncited_claims: int) -> None:
         parts = []
@@ -276,6 +297,7 @@ def _run_generation(req: GenerateRequest, progress_queue: queue.Queue) -> None:
                 "meets_requirements": score.meets_requirements,
                 "overall_feedback": score.overall_feedback,
             },
+            "detection": result.get("detection_scores"),
             "target_achieved": result["target_achieved"],
             "iterations_used": result["iterations_used"],
         })

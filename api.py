@@ -7,7 +7,7 @@ The client receives real-time progress events and a final result event when done
 Event types emitted on the SSE stream:
   {"type": "progress", "stage": "<stage>", "message": "<text>"}
   {"type": "heartbeat"}
-  {"type": "complete", "article": {"original": "...", "humanized": "..."}, "score": {...}, "detection": {"original": {"ai_score": float, "human_score": float, "per_detector": {...}}, "humanized": {...}} | null, "target_achieved": bool, "iterations_used": int}
+  {"type": "complete", "article": {"original": "...", "humanized": "..."}, "score": {...}, "target_achieved": bool, "iterations_used": int}
   {"type": "error", "message": "<text>"}
 
 Usage:
@@ -33,11 +33,12 @@ logging.basicConfig(
 logger = logging.getLogger("li_api")
 
 import dspy
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 from api_models import GenerateRequest
+from auth import require_auth
 from linkedin_article_generator import LinkedInArticleGenerator
 from model_cache import API_DEFAULT_MODEL_NAME, get_cached_model, resolve_model_cached
 from output_manager import OutputManager
@@ -150,18 +151,6 @@ class QueueOutputManager(OutputManager):
 
     def print_undetectable_complete(self) -> None:
         self._emit("humanizing_api_done", "Humanization service complete")
-
-    def print_detection_start(self, which: str) -> None:
-        self._emit(f"detecting_{which}", f"Checking {which} article for AI detection score...")
-
-    def print_detection_progress(self, elapsed: int) -> None:
-        self._emit("detecting_progress", f"Detecting... ({elapsed}s elapsed)")
-
-    def print_detection_complete(self, which: str, ai_score: float, human_score: float) -> None:
-        self._emit(
-            f"detected_{which}",
-            f"Detection ({which}): {human_score:.0f}% human / {ai_score:.0f}% AI",
-        )
 
     def print_citation_issues(self, invalid_citations: int, uncited_claims: int) -> None:
         parts = []
@@ -297,7 +286,6 @@ def _run_generation(req: GenerateRequest, progress_queue: queue.Queue) -> None:
                 "meets_requirements": score.meets_requirements,
                 "overall_feedback": score.overall_feedback,
             },
-            "detection": result.get("detection_scores"),
             "target_achieved": result["target_achieved"],
             "iterations_used": result["iterations_used"],
         })
@@ -360,9 +348,12 @@ async def health():
 
 
 @app.post("/articles/generate", tags=["articles"])
-async def generate_article(req: GenerateRequest):
+async def generate_article(req: GenerateRequest, auth: dict = Depends(require_auth)):
     """
     Generate a LinkedIn article from a draft and stream progress via SSE.
+
+    Requires a valid Clerk JWT in the `Authorization: Bearer <token>` header.
+    Only users with role `root` or `marketing` are permitted.
 
     The response is a `text/event-stream`.  Each event is a JSON object with
     a `type` field:

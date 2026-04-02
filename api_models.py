@@ -14,10 +14,10 @@ class GenerateRequest(BaseModel):
         89.0, ge=0.0, le=100.0, description="Target quality score percentage"
     )
     max_iterations: int = Field(
-        10, ge=1, le=50, description="Maximum improvement iterations"
+        3, ge=1, le=10, description="Maximum improvement iterations"
     )
-    word_count_min: int = Field(2000, ge=100, description="Minimum target word count")
-    word_count_max: int = Field(2500, ge=100, description="Maximum target word count")
+    word_count_min: int = Field(1500, ge=100, description="Minimum target word count")
+    word_count_max: int = Field(2000, ge=100, description="Maximum target word count")
     model: str = Field(
         "gemini/gemini-2.5-flash",
         description="Default fallback model if component-specific models are not set",
@@ -43,12 +43,14 @@ class GenerateRequest(BaseModel):
         description="Regenerate RAG context on each improvement iteration (default: reuse initial context)",
     )
 
-    model_config = {"json_schema_extra": {
-        "example": {
-            "draft": "AI is transforming how businesses operate. Most leaders focus on efficiency gains. But the real disruption is happening at the decision layer — where human judgment meets machine intelligence.",
-            "target_score": 89.0,
-            "max_iterations": 10,
-            "word_count_min": 2000,
-            "word_count_max": 2500,
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "draft": "AI is transforming how businesses operate. Most leaders focus on efficiency gains. But the real disruption is happening at the decision layer — where human judgment meets machine intelligence.",
+                "target_score": 89.0,
+                "max_iterations": 10,
+                "word_count_min": 2000,
+                "word_count_max": 2500,
+            }
         }
-    }}
+    }

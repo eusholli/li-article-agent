@@ -6,7 +6,7 @@ Connects to the SSE stream, prints progress events in real time,
 and displays the final generated article.
 
 Usage:
-    python test_api.py [--url http://localhost:8000] [--score 75] [--iterations 3]
+    python test_api.py --token <clerk_jwt> [--url http://localhost:8000] [--score 75] [--iterations 3]
 
 Requirements:
     pip install httpx
@@ -36,6 +36,7 @@ others are still missing the point entirely.
 
 def run_test(
     api_url: str,
+    token: str,
     target_score: float,
     max_iterations: int,
     word_count_min: int,
@@ -67,7 +68,10 @@ def run_test(
                 "POST",
                 generate_url,
                 json=payload,
-                headers={"Accept": "text/event-stream"},
+                headers={
+                    "Accept": "text/event-stream",
+                    "Authorization": f"Bearer {token}",
+                },
             ) as response:
                 if response.status_code != 200:
                     print(f"ERROR: HTTP {response.status_code}", file=sys.stderr)
@@ -106,6 +110,7 @@ def run_test(
                     elif etype == "complete":
                         elapsed = time.time() - start
                         score = event.get("score", {})
+                        detection = event.get("detection")
                         print(f"\n{'=' * 70}")
                         print(f"  COMPLETE in {elapsed:.1f}s")
                         print(
@@ -119,6 +124,26 @@ def run_test(
                         print(f"  Iterations used:{event.get('iterations_used', '?')}")
                         if score.get("overall_feedback"):
                             print(f"\n  Feedback: {score['overall_feedback'][:200]}...")
+
+                        if detection:
+                            print(f"\n  --- AI Detection Scores ---")
+                            for which in ("original", "humanized"):
+                                d = detection.get(which)
+                                if d:
+                                    print(
+                                        f"  {which.capitalize():10s}  "
+                                        f"AI: {d.get('ai_score', 0):.0f}%  "
+                                        f"Human: {d.get('human_score', 0):.0f}%"
+                                    )
+                                    per = d.get("per_detector", {})
+                                    if per:
+                                        scores_str = "  ".join(
+                                            f"{k}: {v:.0f}%" for k, v in per.items() if v is not None
+                                        )
+                                        print(f"             {scores_str}")
+                        else:
+                            print(f"\n  Detection: not available (UNDETECTABLE_API_KEY not set)")
+
                         print(f"{'=' * 70}")
 
                         article_obj = event.get("article", {})
@@ -129,7 +154,7 @@ def run_test(
                             print(humanized)
                         if original and original != humanized:
                             print(f"\n--- ORIGINAL ARTICLE (pre-humanization) ---\n")
-                            print(original[:500] + "..." if len(original) > 500 else original)
+                            print(original)
                         return 0
 
                     elif etype == "error":
@@ -174,6 +199,11 @@ def main():
     )
     parser.add_argument("--url", default="http://localhost:8000", help="API base URL")
     parser.add_argument(
+        "--token",
+        required=True,
+        help="Clerk JWT for authentication (role must be root or marketing)",
+    )
+    parser.add_argument(
         "--score",
         type=float,
         default=72.0,
@@ -200,7 +230,7 @@ def main():
         sys.exit(1)
 
     sys.exit(
-        run_test(args.url, args.score, args.iterations, args.min_words, args.max_words)
+        run_test(args.url, args.token, args.score, args.iterations, args.min_words, args.max_words)
     )
 
 

@@ -132,11 +132,11 @@ class CriterionScore(BaseModel):
     raw_score: int = Field(
         ..., ge=1, le=5, description="Raw score from 1-5 for this criterion"
     )
-    weighted_score: int = Field(
-        ..., description="Weighted score based on criterion point value"
-    )
     max_points: int = Field(
         ..., description="Maximum possible points for this criterion"
+    )
+    weighted_score: Optional[int] = Field(
+        None, description="Weighted score based on criterion point value. Computed as (raw_score * max_points) // 5 if not provided."
     )
     reasoning: str = Field(
         ..., min_length=10, description="Detailed explanation of the score"
@@ -146,6 +146,15 @@ class CriterionScore(BaseModel):
         min_length=10,
         description="Specific improvement suggestions. If the criterion is well-executed, write 'No improvements needed - this criterion is well executed.' Do NOT write 'None'.",
     )
+
+    @validator("weighted_score", always=True)
+    def compute_weighted_score_if_missing(cls, v, values):
+        if v is None:
+            raw_score = values.get("raw_score")
+            max_points = values.get("max_points")
+            if raw_score is not None and max_points is not None:
+                return (raw_score * max_points) // 5
+        return v
 
     @validator("suggestions")
     def suggestions_not_none(cls, v):
@@ -1277,9 +1286,12 @@ class FastLinkedInArticleScorer(dspy.Module):
             for criterion_score in comprehensive_result.criterion_scores:
                 if criterion_score.category == category_name:
                     # Convert to legacy ScoreResultModel format
+                    weighted = criterion_score.weighted_score
+                    if weighted is None:
+                        weighted = (criterion_score.raw_score * criterion_score.max_points) // 5
                     legacy_result = ScoreResultModel(
                         criterion=f"{criterion_score.criterion_id}: {criterion_score.question}",
-                        score=criterion_score.weighted_score,
+                        score=weighted,
                         reasoning=criterion_score.reasoning,
                         suggestions=criterion_score.suggestions,
                     )

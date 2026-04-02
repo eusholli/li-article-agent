@@ -6,11 +6,8 @@ Three-pass pipeline:
   Pass 2 (Undetectable.ai humanizer API): Statistical transformation for detector evasion
   Pass 3 (LLM Predict, minimal): Restore brand voice constraints the API may have broken
 
-After humanization, runs AI detection on both original and humanized articles via the
-Undetectable.ai Detector API, returning per-detector scores for the client.
-
-Requires UNDETECTABLE_API_KEY in environment. If not set, Pass 2 and detection are
-skipped gracefully — Pass 1 + Pass 3 still run.
+Requires UNDETECTABLE_API_KEY in environment. If not set, Pass 2 is skipped gracefully —
+Pass 1 + Pass 3 still run.
 """
 
 import logging
@@ -191,73 +188,12 @@ class UndetectableHumanizerApi:
         )
 
 
-class UndetectableDetectorApi:
-    """Submit text to Undetectable.ai detector and poll for per-detector scores."""
-
-    BASE_URL = "https://ai-detect.undetectable.ai"
-
-    def __init__(self, api_key: str):
-        self._key = api_key
-
-    def detect(
-        self,
-        text: str,
-        progress_callback=None,
-        timeout_seconds: int = 120,
-    ) -> dict:
-        """Detect AI content. Returns {"ai_score": float, "human_score": float, "per_detector": {...}}"""
-        resp = httpx.post(
-            f"{self.BASE_URL}/detect",
-            timeout=30.0,
-            json={"key": self._key, "text": text, "model": "xlm_ud_detector"},
-        )
-        resp.raise_for_status()
-        doc_id = resp.json()["id"]
-
-        for i in range(timeout_seconds // 10):
-            time.sleep(10)
-            elapsed = (i + 1) * 10
-            if progress_callback:
-                progress_callback(elapsed=elapsed)
-            doc = httpx.post(
-                f"{self.BASE_URL}/query",
-                timeout=30.0,
-                json={"id": doc_id},
-            ).json()
-            if doc.get("status") == "done":
-                details = doc.get("result_details", {})
-                return {
-                    "ai_score": doc.get("result", 0.0),
-                    "human_score": details.get("human", 0.0),
-                    "per_detector": {
-                        "gpt_zero": details.get("scoreGptZero", 0.0),
-                        "openai": details.get("scoreOpenAI", 0.0),
-                        "writer": details.get("scoreWriter", 0.0),
-                        "cross_plag": details.get("scoreCrossPlag", 0.0),
-                        "copy_leaks": details.get("scoreCopyLeaks", 0.0),
-                        "sapling": details.get("scoreSapling", 0.0),
-                        "content_at_scale": details.get("scoreContentAtScale", 0.0),
-                        "zero_gpt": details.get("scoreZeroGPT", 0.0),
-                    },
-                }
-
-        raise TimeoutError(
-            f"Undetectable.ai detector timed out after {timeout_seconds}s for doc {doc_id}"
-        )
-
 
 class HumanizerModule(dspy.Module):
     """Three-pass humanizer: LLM brand voice → Undetectable.ai API → LLM brand voice restoration.
 
     Returns a dict:
-        {
-            "humanized_article": str,
-            "detection": {
-                "original": {"ai_score": float, "human_score": float, "per_detector": {...}},
-                "humanized": {"ai_score": float, "human_score": float, "per_detector": {...}},
-            } | None
-        }
-    detection is None when UNDETECTABLE_API_KEY is not set.
+        {"humanized_article": str}
     """
 
     def __init__(self, output_manager=None):
@@ -267,17 +203,16 @@ class HumanizerModule(dspy.Module):
         self.output_manager = output_manager
         api_key = os.getenv("UNDETECTABLE_API_KEY")
         self.humanizer_api = UndetectableHumanizerApi(api_key) if api_key else None
-        self.detector_api = UndetectableDetectorApi(api_key) if api_key else None
 
     def forward(self, article: str) -> dict:
         """
-        Humanize an article in three passes and optionally run AI detection.
+        Humanize an article in three passes.
 
         Args:
             article: The article text to humanize.
 
         Returns:
-            Dict with "humanized_article" (str) and "detection" (dict or None).
+            Dict with "humanized_article" (str).
         """
         # Pass 1: LLM — remove AI vocabulary + apply brand voice
         pass1 = self.rewrite(article=article)
@@ -308,30 +243,4 @@ class HumanizerModule(dspy.Module):
         pass3 = self.restore(humanized_draft=api_output)
         humanized = pass3.final_article
 
-        # Detection: original and humanized
-        detection = None
-        if self.detector_api:
-            detection = {}
-            for which, text in (("original", article), ("humanized", humanized)):
-                if self.output_manager:
-                    self.output_manager.print_detection_start(which)
-                try:
-                    detection[which] = self.detector_api.detect(
-                        text,
-                        progress_callback=(
-                            self.output_manager.print_detection_progress
-                            if self.output_manager
-                            else None
-                        ),
-                    )
-                    if self.output_manager:
-                        self.output_manager.print_detection_complete(
-                            which,
-                            detection[which]["ai_score"],
-                            detection[which]["human_score"],
-                        )
-                except Exception as e:
-                    logging.warning(f"Detection ({which}) skipped: {e}")
-                    detection[which] = None
-
-        return {"humanized_article": humanized, "detection": detection}
+        return {"humanized_article": humanized}

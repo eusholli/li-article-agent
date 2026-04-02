@@ -2,7 +2,7 @@
 
 Base URL: `http://<host>:8000`
 Protocol: HTTP/1.1 with Server-Sent Events (SSE) for streaming
-Auth: None (add a reverse-proxy layer for production)
+Auth: Clerk JWT Bearer token (roles `root` or `marketing` required)
 CORS: All origins permitted
 
 ---
@@ -28,11 +28,14 @@ Health check. Use this to confirm the server is up before initiating generation.
 
 Generate a LinkedIn article. The response is a **Server-Sent Events stream** that delivers real-time progress events followed by the completed article.
 
+**Authentication required.** Include a valid Clerk JWT in the `Authorization` header. The user's role (from `publicMetadata.role` in Clerk) must be `root` or `marketing`. Other roles receive `403 Forbidden`.
+
 **Request headers**
 
 ```
 Content-Type: application/json
 Accept: text/event-stream
+Authorization: Bearer <clerk_jwt>
 ```
 
 **Request body**
@@ -118,10 +121,20 @@ Emitted continuously throughout generation to report the current stage.
 | `fact_check_passed` | Article cleared by fact-checker |
 | `fact_check_failed` | Fact-check found issues (article still returned) |
 | `citation_issues` | Specific citation problems found |
-| `humanizing` | Humanization rewrite starting — this is the last progress event before `complete` |
+| `humanizing` | Humanization rewrite starting (Pass 1 LLM) |
 | `humanized` | Humanization complete |
+| `humanizing_api` | Submitted to Undetectable.ai humanization service, waiting for result |
+| `humanizing_api_progress` | Polling Undetectable.ai; message includes elapsed seconds |
+| `humanizing_api_done` | Undetectable.ai humanization complete |
+| `detecting_original` | AI detection check starting on the original (pre-humanization) article |
+| `detecting_humanized` | AI detection check starting on the humanized article |
+| `detecting_progress` | Polling AI detector; message includes elapsed seconds |
+| `detected_original` | Detection complete for original article; message includes human/AI % |
+| `detected_humanized` | Detection complete for humanized article; message includes human/AI % |
 | `complete_version` | Internal version complete |
 | `info` | General informational message |
+
+> **Note on `humanizing_api` stages:** These events are only emitted when `UNDETECTABLE_API_KEY` is configured server-side. When the key is absent, the pipeline runs LLM-only (Pass 1 + Pass 3) and `detection` in the `complete` event will be `null`.
 
 ### Event type: `heartbeat`
 
@@ -149,17 +162,49 @@ The terminal success event. The stream ends immediately after this event.
     "meets_requirements": true,
     "overall_feedback": "Strong strategic framing..."
   },
+  "detection": {
+    "original": {
+      "ai_score": 94.0,
+      "human_score": 6.0,
+      "per_detector": {
+        "gpt_zero": 12.0,
+        "openai": 0.0,
+        "writer": 100.0,
+        "cross_plag": 100.0,
+        "copy_leaks": 100.0,
+        "sapling": 100.0,
+        "content_at_scale": 100.0,
+        "zero_gpt": 94.0
+      }
+    },
+    "humanized": {
+      "ai_score": 18.0,
+      "human_score": 82.0,
+      "per_detector": {
+        "gpt_zero": 2.0,
+        "openai": 0.0,
+        "writer": 88.0,
+        "cross_plag": 100.0,
+        "copy_leaks": 100.0,
+        "sapling": 75.0,
+        "content_at_scale": 80.0,
+        "zero_gpt": 22.0
+      }
+    }
+  },
   "target_achieved": true,
   "iterations_used": 3
 }
 ```
+
+> **`detection` is `null`** when `UNDETECTABLE_API_KEY` is not configured server-side. Individual detector entries within `detection.original` or `detection.humanized` may also be `null` if that specific detection call failed.
 
 **`article` object fields:**
 
 | Field | Type | Description |
 |---|---|---|
 | `original` | string | The article after quality scoring and fact-checking, before humanization |
-| `humanized` | string | The article after the two-pass humanizer rewrite. Use this for publishing. If humanization fails, equals `original`. |
+| `humanized` | string | The article after the three-pass humanizer rewrite. Use this for publishing. If humanization fails, equals `original`. |
 
 **`score` object fields:**
 
@@ -170,6 +215,30 @@ The terminal success event. The stream ends immediately after this event.
 | `word_count` | integer | Word count of the pre-humanization article |
 | `meets_requirements` | boolean | Both score and word count targets were met |
 | `overall_feedback` | string\|null | Human-readable summary from the judge |
+
+**`detection` object fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `detection` | object\|null | AI detection scores, or `null` if `UNDETECTABLE_API_KEY` is not set |
+| `detection.original` | object\|null | Detection scores for the pre-humanization article |
+| `detection.humanized` | object\|null | Detection scores for the post-humanization article |
+| `detection.*.ai_score` | number | Overall AI-ness score (0–100). Under 50 = human; under 25 = strongly human |
+| `detection.*.human_score` | number | Overall human probability % (0–100). Complement of `ai_score` |
+| `detection.*.per_detector` | object | Per-detector human scores (0–100) from individual classifiers |
+
+**`detection.*.per_detector` keys** — each value is a human-probability % (0–100):
+
+| Key | Detector |
+|---|---|
+| `gpt_zero` | GPTZero |
+| `openai` | OpenAI Text Classifier |
+| `writer` | Writer.com |
+| `cross_plag` | CrossPlag |
+| `copy_leaks` | CopyLeaks |
+| `sapling` | Sapling |
+| `content_at_scale` | Content at Scale |
+| `zero_gpt` | ZeroGPT |
 
 **`target_achieved`**: `true` means both `percentage >= target_score` AND word count is within range. If max_iterations was reached before hitting the target, this will be `false` but the best article found is still returned.
 
@@ -226,6 +295,14 @@ export type ProgressStage =
   | "citation_issues"
   | "humanizing"
   | "humanized"
+  | "humanizing_api"
+  | "humanizing_api_progress"
+  | "humanizing_api_done"
+  | "detecting_original"
+  | "detecting_humanized"
+  | "detecting_progress"
+  | "detected_original"
+  | "detected_humanized"
   | "complete_version"
   | "info";
 
@@ -254,10 +331,37 @@ export interface ArticleResult {
   humanized: string;
 }
 
+export interface PerDetectorScores {
+  gpt_zero: number;
+  openai: number;
+  writer: number;
+  cross_plag: number;
+  copy_leaks: number;
+  sapling: number;
+  content_at_scale: number;
+  zero_gpt: number;
+}
+
+export interface DetectionScore {
+  /** Overall AI-ness score 0–100. Under 50 = human; under 25 = strongly human */
+  ai_score: number;
+  /** Overall human probability % (complement of ai_score) */
+  human_score: number;
+  /** Per-detector human scores 0–100 */
+  per_detector: PerDetectorScores;
+}
+
+export interface DetectionScores {
+  original: DetectionScore | null;
+  humanized: DetectionScore | null;
+}
+
 export interface CompleteEvent {
   type: "complete";
   article: ArticleResult;
   score: ArticleScore;
+  /** null when UNDETECTABLE_API_KEY is not configured server-side */
+  detection: DetectionScores | null;
   target_achieved: boolean;
   iterations_used: number;
 }
@@ -326,7 +430,8 @@ export interface GenerationCallbacks {
 export function generateArticle(
   baseUrl: string,
   request: GenerateRequest,
-  callbacks: GenerationCallbacks
+  callbacks: GenerationCallbacks,
+  clerkToken: string
 ): AbortController {
   const controller = new AbortController();
 
@@ -339,6 +444,7 @@ export function generateArticle(
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
+          Authorization: `Bearer ${clerkToken}`,
         },
         body: JSON.stringify(request),
         signal: controller.signal,
@@ -523,10 +629,30 @@ function ArticleGenerator() {
 
 ---
 
+## Environment Variables
+
+The API server requires these variables in `.env` or the process environment:
+
+| Variable | Required | Description |
+|---|---|---|
+| `WEBAPP_URL` | yes (auth) | Base URL of the event-planner webapp, e.g. `https://events.example.com` |
+| `CRON_SECRET_KEY` | yes (auth) | Shared secret for calling `/api/intelligence/session` on event-planner |
+| `GEMINI_API_KEY` | yes | Google Gemini API key (default model) |
+| `OPENROUTER_API_KEY` | no | OpenRouter key (for non-Gemini models) |
+| `TAVILY_API_KEY` | no | Tavily web search API key |
+| `UNDETECTABLE_API_KEY` | no | Undetectable.ai key (AI detection scoring) |
+
+---
+
 ## Error Reference
 
 | Scenario | Behaviour |
 |---|---|
+| Missing `Authorization` header | HTTP `403 Forbidden` |
+| Invalid or expired Clerk JWT | HTTP `401 Unauthorized` |
+| Valid JWT but role not `root`/`marketing` | HTTP `403 Forbidden` |
+| Auth service (`WEBAPP_URL`) unreachable | HTTP `503 Service Unavailable` |
+| `WEBAPP_URL` or `CRON_SECRET_KEY` not set | HTTP `500 Internal Server Error` |
 | `draft` shorter than 50 characters | HTTP `422 Unprocessable Entity` before stream opens |
 | `target_score` outside 0–100 | HTTP `422 Unprocessable Entity` |
 | `max_iterations` outside 1–50 | HTTP `422 Unprocessable Entity` |

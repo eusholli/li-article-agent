@@ -621,27 +621,6 @@ class OutputManager:
         )
         print(message)
 
-    def print_detection_start(self, which: str):
-        """Print message when AI detection check starts."""
-        message = self._format_version_message(
-            f"Checking {which} article for AI detection score...", "🔬"
-        )
-        print(message)
-
-    def print_detection_progress(self, elapsed: int):
-        """Print polling progress update from AI detector."""
-        message = self._format_version_message(
-            f"Detecting... ({elapsed}s elapsed)", "⏳"
-        )
-        print(message)
-
-    def print_detection_complete(self, which: str, ai_score: float, human_score: float):
-        """Print AI detection result."""
-        message = self._format_version_message(
-            f"Detection ({which}): {human_score:.0f}% human / {ai_score:.0f}% AI", "📊"
-        )
-        print(message)
-
     # ============================================================================
     # SCORE REPORTING METHODS (from li_article_judge.py)
     # ============================================================================
